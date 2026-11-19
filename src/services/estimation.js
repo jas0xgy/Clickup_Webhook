@@ -1,5 +1,6 @@
 const { logger } = require('../utils/logger');
 const { numberValue } = require('../utils/fields');
+const { ensureUserStory } = require('./userStory');
 const { isManaged, sourceIdOf, linkedIds } = require('./sprintTasks');
 
 const normalize = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -54,6 +55,7 @@ class Estimation {
       logger.debug(`Task ${source.id}: no longer "${this.settings.triggerStatus}"`);
       return { outcome: 'skipped' };
     }
+    await ensureUserStory(this.clickup, source, this.config.backlogListId);
     const existing = await this.findCopy(source);
     if (existing?.archived) {
       await this.clickup.updateTask(existing.id, { archived: false });
@@ -117,7 +119,7 @@ class Estimation {
 
   async flag(estimateTask, problem) {
     logger.error(`Estimation task ${estimateTask.id}: ${problem}`);
-    await this.clickup.addTaskComment(estimateTask.id, `Automation could not update the estimate: ${problem}`);
+    await this.clickup.addTaskComment(estimateTask.id, `[Workflow Agent] Automation could not update the estimate: ${problem}`);
     return { outcome: 'flagged' };
   }
 }

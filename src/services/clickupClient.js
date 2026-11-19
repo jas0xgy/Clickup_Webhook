@@ -56,7 +56,9 @@ class ClickUpClient {
     try {
       logger.info(`Fetching task ${taskId}`);
       
-      const response = await this.client.get(`/task/${taskId}`);
+      const response = await this.client.get(`/task/${taskId}`, {
+        params: { include_markdown_description: true }
+      });
       
       return response.data;
     } catch (error) {

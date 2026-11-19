@@ -71,6 +71,18 @@ test('awaiting estimation creates one estimation copy with the description, back
   assert.equal(writes.length, 1);
 });
 
+test('estimation generates a missed story from current fields before copying', async () => {
+  const { service, source, writes } = fixture();
+  source.description = '';
+  source.custom_fields.push(...['Persona', 'Goal', 'Benefit', 'Success'].map(name =>
+    ({ id: name, name, type: 'short_text', value: name })));
+  await service.request(clone(source));
+  assert.deepEqual(writes.map(([action]) => action), ['update', 'create']);
+  const story = writes[0][2].description;
+  assert.match(story, /User Story \(managed\)\nPersona Goal Benefit\.\nSuccess is when Success\./);
+  assert.equal(writes[1][2].description, `${story}\n\nBacklog task: ${source.url}`);
+});
+
 test('estimate ready copies a positive Effort Estimate to the backlog task once', async () => {
   const { service, source, store, writes } = fixture();
   await service.request(clone(source));

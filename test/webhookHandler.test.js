@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { ClickUpClient } = require('../src/services/clickupClient');
 const { handleWebhook } = require('../src/services/webhookHandler');
 const { SprintRouting } = require('../src/services/sprintRouting');
+const { sprintRouting } = require('../src/config');
 
 const fieldId = 'estimate-field-id';
 
@@ -49,6 +50,7 @@ test('unrelated fields and formula updates do not fetch tasks or trigger routing
 test('task name and Product changes dispatch to sprint routing while Persona only updates the description', async t => {
   const task = {
     id: 'test-task',
+    list: { id: sprintRouting.backlogListId },
     custom_fields: ['Persona', 'Goal', 'Benefit', 'Success'].map(name => ({
       id: name.toLowerCase(), name, type: 'short_text', value: name
     }))
@@ -71,6 +73,7 @@ test('task name and Product changes dispatch to sprint routing while Persona onl
 test('changes to any description input rebuild the task description from current field values', async t => {
   const task = {
     id: 'test-task',
+    list: { id: sprintRouting.backlogListId },
     custom_fields: [
       {
         id: 'persona', name: 'Persona', type: 'drop_down', value: 'user-option',
@@ -104,19 +107,20 @@ test('changes to any description input rebuild the task description from current
   assert.equal(update.mock.callCount(), 1);
   assert.deepEqual(update.mock.calls[0].arguments, [
     'test-task',
-    { description: 'End user reduce setup time faster onboarding.  \r\nSuccess is when users finish setup in minutes.' }
+    { description: 'User Story (managed)\nEnd user reduce setup time faster onboarding.\nSuccess is when users finish setup in minutes.\nEnd User Story (managed)' }
   ]);
 });
 
 test('description automation reports missing input fields without writing', async t => {
   const task = {
     id: 'test-task',
-    custom_fields: [{ id: 'persona', name: 'Persona', type: 'short_text', value: 'User' }]
+    list: { id: sprintRouting.backlogListId },
+    custom_fields: [{ id: 'goal', name: 'Goal', type: 'short_text', value: 'New goal' }]
   };
   t.mock.method(ClickUpClient.prototype, 'getTask', async () => task);
   const update = t.mock.method(ClickUpClient.prototype, 'updateTask', async () => ({}));
   const { logger } = require('../src/utils/logger');
-  const error = t.mock.method(logger, 'error', () => {});
+  const warn = t.mock.method(logger, 'warn', () => {});
 
   await handleWebhook({
     event: 'taskUpdated',
@@ -129,8 +133,8 @@ test('description automation reports missing input fields without writing', asyn
   });
 
   assert.equal(update.mock.callCount(), 0);
-  assert.equal(error.mock.callCount(), 1);
-  assert.match(error.mock.calls[0].arguments[0], /custom-fields-to-task-description/);
+  assert.equal(warn.mock.callCount(), 1);
+  assert.match(warn.mock.calls[0].arguments[0], /incomplete-story-inputs/);
 });
 
 test('multiple matching history items dispatch a rule only once', async t => {

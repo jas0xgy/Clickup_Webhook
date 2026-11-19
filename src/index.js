@@ -7,6 +7,8 @@ const { DailySprintCheck } = require('./services/dailySprintCheck');
 const { reconcileSprints } = require('./services/webhookHandler');
 const { sendHealthEmail } = require('./services/healthEmail');
 const { sprintRouting } = require('./config');
+const { ClickUpClient } = require('./services/clickupClient');
+const { startWorkflowValidation } = require('./services/workflowValidation');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -24,6 +26,9 @@ app.get('/health', (req, res) => {
 
 const server = app.listen(port, () => {
   logger.info(`ClickUp webhook service listening on port ${server.address().port}`);
+  if (sprintRouting.workflowValidation.enabled) {
+    server.on('close', startWorkflowValidation(new ClickUpClient(), sprintRouting));
+  }
   if (sprintRouting.daily.enabled) {
     const dailyCheck = new DailySprintCheck(async () => {
       let result;

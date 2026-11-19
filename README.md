@@ -131,8 +131,20 @@ You should get a response like:
 5. Each rule checks its own conditions and skips unnecessary writes. Failures are
    logged with the task and rule name without blocking other matching rules.
    Webhook and scheduled work on the same task is serialized within this process.
-   Changes to Persona, Goal, Benefit, or Success rebuild the task description
-   using current field values, with Success on a new line.
+   On Master Backlog tasks, changes to Persona, Goal, Benefit, or Success update
+   the managed User Story section once all four inputs are available. Text outside
+   the section is preserved. Estimation and testing handoffs also check the source
+   story before copying it, so they don't depend on a prior field-change webhook.
+
+### Workflow Validation (Report Only)
+
+At startup and every 15 minutes while running, the service checks active Master
+Backlog tasks and terminal tasks updated within the last seven days. It checks
+story sections and looks for missing, duplicate, or inconsistent managed copies
+in the Estimation, Sprint, and Testing Lists. Search the daily logs for
+`Workflow validation finding`. The scan does not update tasks, archive copies,
+or post comments. Existing estimation and testing error comments are prefixed
+with `[Workflow Agent]` but still attributed to the API token's owner.
 
 ### Sprint Routing
 

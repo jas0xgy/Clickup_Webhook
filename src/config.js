@@ -48,6 +48,11 @@ module.exports = {
       failureSubject: 'Clickup Webhook Service daily check FAILED',
       timeZone: 'America/New_York'
     },
+    workflowValidation: {
+      enabled: true,
+      intervalMinutes: 15,
+      recentDays: 7
+    },
     daily: {
       enabled: true,
       timeZone: 'America/New_York',

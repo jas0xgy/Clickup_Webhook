@@ -1,4 +1,5 @@
 const { logger } = require('../utils/logger');
+const { ensureUserStory } = require('./userStory');
 const { isManaged, sourceIdOf, linkedIds } = require('./sprintTasks');
 
 const normalize = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -62,6 +63,7 @@ class AcceptanceTesting {
       if (String(source.list?.id) !== this.config.backlogListId) {
         throw new Error(`Linked task ${sourceId} is not in Master Backlog`);
       }
+      await ensureUserStory(this.clickup, source, this.config.backlogListId);
       let copy = await this.findCopy(source);
       if (!copy) {
         const testingList = await this.clickup.getList(this.settings.listId);
@@ -137,7 +139,7 @@ class AcceptanceTesting {
 
   async flag(testingTask, problem) {
     logger.error(`Testing task ${testingTask.id}: ${problem}`);
-    await this.clickup.addTaskComment(testingTask.id, `Automation could not complete acceptance testing: ${problem}`);
+    await this.clickup.addTaskComment(testingTask.id, `[Workflow Agent] Automation could not complete acceptance testing: ${problem}`);
     return { outcome: 'flagged' };
   }
 }
