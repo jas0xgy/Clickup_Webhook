@@ -216,7 +216,7 @@ test('unchanged backlog routing still repairs or backfills the linked sprint ite
   assert.deepEqual(writes, []);
 });
 
-test('name/Product/Persona changes sync existing items without rerouting or backfilling', async () => {
+test('name and Product changes sync existing items but Persona changes do not', async () => {
   for (const status of ['new backlog', 'in testing']) {
     const { router, writes } = fixture();
     const source = task(status, lists[0].name);
@@ -234,19 +234,21 @@ test('name/Product/Persona changes sync existing items without rerouting or back
     };
     for (const change of [
       { field: 'name', before: 'Old', after: 'New' },
-      { field: 'custom_field', custom_field: { id: 'product', name: 'Product' } },
-      { field: 'custom_field', custom_field: { id: 'persona', name: 'Persona' } }
+      { field: 'custom_field', custom_field: { id: 'product', name: 'Product' } }
     ]) {
       const result = await router.reconcileTask(source, { changes: [change] });
       assert.equal(result.targetStatus, status);
       assert.deepEqual(writes, []);
     }
-    assert.equal(applied, 3);
+    const persona = await router.reconcileTask(source, { changes: [{
+      field: 'custom_field', custom_field: { id: 'persona', name: 'Persona' }
+    }] });
+    assert.equal(persona.outcome, 'skipped');
     const stale = await router.reconcileTask(source, { changes: [{
       field: 'custom_field', custom_field: { id: 'old-product', name: 'Product' }
     }] });
     assert.equal(stale.outcome, 'skipped');
-    assert.equal(applied, 3);
+    assert.equal(applied, 2);
   }
 });
 
@@ -415,6 +417,23 @@ test('partial scheduling failures surface and can recover through assignment rec
     start_date: Number(lists[1].start_date), start_date_time: true,
     due_date: Number(lists[1].due_date), due_date_time: true
   }]);
+});
+
+test('before the first sprint or between sprints, SPRINT 0 is the next sprint to start', async t => {
+  const gapLists = [lists[0], { ...lists[1], start_date: String(Number(lists[1].start_date) + 86400000) }, lists[2]];
+  const cases = [
+    { now: Date.parse('2026-11-10T12:00:00Z'), status: 'sprint 0', expected: lists[0].name },
+    { now: Date.parse('2026-11-10T12:00:00Z'), status: 'sprint +1', expected: lists[1].name },
+    { now: Number(lists[0].due_date) + 3600000, status: 'sprint 0', expected: lists[1].name },
+    { now: Number(lists[0].due_date) + 3600000, status: 'sprint +1', expected: lists[2].name }
+  ];
+  for (const { now, status, expected } of cases) {
+    await t.test(`${new Date(now).toISOString()} ${status}`, async () => {
+      const { router } = fixture({ now, sprintLists: gapLists });
+      const plan = await router.reconcileTask(task(status), { changes: [statusChange(status)], dryRun: true });
+      assert.equal(plan.assignment.value, expected);
+    });
+  }
 });
 
 test('missing targets, dates, current sprints and unknown assignments fail before writing', async t => {

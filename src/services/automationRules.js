@@ -1,5 +1,40 @@
 const { logger } = require('../utils/logger');
 const { numberValue } = require('../utils/fields');
+const { sprintRouting: sprintConfig } = require('../config');
+const { archiveCopiesOnStatus } = require('./managedCopies');
+
+const descriptionFields = ['Persona', 'Goal', 'Benefit', 'Success'];
+
+function statusChangedTo(change, settings, key) {
+  return Boolean(settings?.enabled && settings[key]) && change?.field === 'status' &&
+    typeof change.after?.status === 'string' &&
+    change.after.status.trim().toLowerCase() === settings[key].toLowerCase();
+}
+
+function statusChangedToAny(change, settings) {
+  return Boolean(settings?.enabled && Array.isArray(settings.archiveOnStatuses)) &&
+    change?.field === 'status' && typeof change.after?.status === 'string' &&
+    settings.archiveOnStatuses.some(status => status.toLowerCase() === change.after.status.trim().toLowerCase());
+}
+
+function descriptionFieldValue(clickup, field, name) {
+  if (!field?.id) {
+    throw new Error(`Required task description custom field "${name}" is missing`);
+  }
+  if (field.value == null || field.value === '') return '';
+  if (field.type === 'drop_down') {
+    const option = clickup.getDropdownOption(field);
+    if (!option || typeof option.name !== 'string') {
+      throw new Error(`Cannot resolve "${field.name}" dropdown value "${field.value}"`);
+    }
+    return option.name.trim();
+  }
+  if (typeof field.value === 'string' || typeof field.value === 'number' ||
+      typeof field.value === 'boolean') {
+    return String(field.value).trim();
+  }
+  throw new Error(`Cannot render "${field.name}" custom field in the task description`);
+}
 
 function createDropdownNumberRule({ name, sourceField, targetField, values }) {
   return {
@@ -43,12 +78,72 @@ function createDropdownNumberRule({ name, sourceField, targetField, values }) {
 
 const automationRules = [
   {
+    name: 'custom-fields-to-task-description',
+    matchesChange: change => change?.field === 'custom_field' &&
+      descriptionFields.some(name =>
+        typeof change.custom_field?.name === 'string' &&
+        change.custom_field.name.trim().toLowerCase() === name.toLowerCase()),
+    async run({ task, clickup }) {
+      const values = Object.fromEntries(descriptionFields.map(name => [
+        name.toLowerCase(),
+        descriptionFieldValue(clickup, clickup.getCustomField(task, name), name)
+      ]));
+      const description = `${values.persona} ${values.goal} ${values.benefit}.  \r\n` +
+        `Success is when ${values.success}.`;
+      if (task.description === description) return;
+
+      await clickup.updateTask(task.id, { description });
+      task.description = description;
+      logger.info(`Task ${task.id}: updated description from Persona, Goal, Benefit, and Success`);
+    }
+  },
+  {
     name: 'sprint-routing',
     matchesChange: change => change?.field === 'status' || change?.field === 'name' ||
       (change?.field === 'custom_field' && typeof change.custom_field?.id === 'string' &&
         typeof change.custom_field.name === 'string' &&
-        ['effort estimate', 'assigned sprint', 'product', 'persona'].includes(change.custom_field.name.trim().toLowerCase())),
+        ['effort estimate', 'assigned sprint', 'product'].includes(change.custom_field.name.trim().toLowerCase())),
     run: ({ task, changes, sprintRouting }) => sprintRouting.reconcileTask(task, { changes })
+  },
+  {
+    name: 'ready-for-acceptance-testing',
+    matchesChange: change => {
+      const settings = sprintConfig.acceptanceTesting;
+      return Boolean(settings?.enabled) && change?.field === 'custom_field' &&
+        typeof change.custom_field?.name === 'string' &&
+        change.custom_field.name.trim().toLowerCase() === settings.checkboxField.toLowerCase() &&
+        (change.after === true || change.after === 'true');
+    },
+    run: ({ task, acceptanceTesting }) => acceptanceTesting.handle(task)
+  },
+  {
+    name: 'testing-complete-to-ready-to-deploy',
+    matchesChange: change => statusChangedTo(change, sprintConfig.acceptanceTesting, 'completeStatus'),
+    run: ({ task, acceptanceTesting }) => acceptanceTesting.complete(task)
+  },
+  {
+    name: 'awaiting-estimation-to-estimation-list',
+    matchesChange: change => statusChangedTo(change, sprintConfig.estimation, 'triggerStatus'),
+    run: ({ task, estimation }) => estimation.request(task)
+  },
+  {
+    name: 'estimate-ready-to-backlog-estimate',
+    matchesChange: change => statusChangedTo(change, sprintConfig.estimation, 'readyStatus'),
+    run: ({ task, estimation }) => estimation.complete(task)
+  },
+  {
+    name: 'scheduled-archives-estimation-copy',
+    matchesChange: change => statusChangedToAny(change, sprintConfig.estimation),
+    run: ({ task, clickup }) => archiveCopiesOnStatus({
+      clickup, config: sprintConfig, task, settings: sprintConfig.estimation, label: 'estimation'
+    })
+  },
+  {
+    name: 'deployed-archives-testing-copy',
+    matchesChange: change => statusChangedToAny(change, sprintConfig.acceptanceTesting),
+    run: ({ task, clickup }) => archiveCopiesOnStatus({
+      clickup, config: sprintConfig, task, settings: sprintConfig.acceptanceTesting, label: 'testing'
+    })
   },
   createDropdownNumberRule({
     name: 'backlog-priority-to-business-value',

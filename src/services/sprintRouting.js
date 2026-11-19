@@ -51,10 +51,12 @@ function buildCatalog(lists, completedSprintIds, statuses) {
   return { sprints, active, statuses: statuses.map(statusName) };
 }
 
+// SPRINT 0 is the sprint containing now; between or before sprints, it is the next one to start.
 function currentSprintIndex(catalog, now) {
-  const index = catalog.active.findIndex(sprint => sprint.start <= now && now <= sprint.end);
+  let index = catalog.active.findIndex(sprint => sprint.start <= now && now <= sprint.end);
+  if (index === -1) index = catalog.active.findIndex(sprint => sprint.start > now);
   if (index === -1) {
-    throw new Error('No uncompleted, unarchived sprint contains today; refusing to guess a current sprint');
+    throw new Error('No uncompleted, unarchived sprint contains today or starts later; add upcoming sprint Lists');
   }
   return index;
 }
@@ -113,7 +115,7 @@ class SprintRouting {
     };
     if (!this.isEligible(task)) return skip('Outside Master Backlog, archived, or without a positive estimate');
     const assigned = this.clickup.getCustomField(task, 'Assigned Sprint');
-    const detailFields = this.sprintTasks ? ['product', 'persona'] : [];
+    const detailFields = this.sprintTasks ? ['product'] : [];
     const relevantFields = ['effort estimate', 'assigned sprint', ...detailFields];
     const statusChanges = changes.filter(change => change.field === 'status');
     const nameChanges = this.sprintTasks ? changes.filter(change => change.field === 'name') : [];

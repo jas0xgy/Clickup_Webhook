@@ -46,9 +46,16 @@ test('unrelated fields and formula updates do not fetch tasks or trigger routing
   assert.equal(get.mock.callCount(), 0);
 });
 
-test('task name, Product, and Persona changes dispatch to the shared sprint lifecycle', async t => {
-  const get = t.mock.method(ClickUpClient.prototype, 'getTask', async () => ({ id: 'test-task' }));
+test('task name and Product changes dispatch to sprint routing while Persona only updates the description', async t => {
+  const task = {
+    id: 'test-task',
+    custom_fields: ['Persona', 'Goal', 'Benefit', 'Success'].map(name => ({
+      id: name.toLowerCase(), name, type: 'short_text', value: name
+    }))
+  };
+  const get = t.mock.method(ClickUpClient.prototype, 'getTask', async () => task);
   const route = t.mock.method(SprintRouting.prototype, 'reconcileTask', async () => ({}));
+  const update = t.mock.method(ClickUpClient.prototype, 'updateTask', async () => ({}));
   for (const change of [
     { field: 'name', before: 'Old', after: 'New' },
     { field: 'custom_field', custom_field: { id: 'product', name: 'Product' }, after: 0 },
@@ -57,7 +64,73 @@ test('task name, Product, and Persona changes dispatch to the shared sprint life
     await handleWebhook({ event: 'taskUpdated', task_id: 'test-task', history_items: [change] });
   }
   assert.equal(get.mock.callCount(), 3);
-  assert.equal(route.mock.callCount(), 3);
+  assert.equal(route.mock.callCount(), 2);
+  assert.equal(update.mock.callCount(), 1);
+});
+
+test('changes to any description input rebuild the task description from current field values', async t => {
+  const task = {
+    id: 'test-task',
+    custom_fields: [
+      {
+        id: 'persona', name: 'Persona', type: 'drop_down', value: 'user-option',
+        type_config: { options: [{ id: 'user-option', name: 'End user' }] }
+      },
+      { id: 'goal', name: 'Goal', type: 'short_text', value: 'reduce setup time' },
+      { id: 'benefit', name: 'Benefit', type: 'short_text', value: 'faster onboarding' },
+      { id: 'success', name: 'Success', type: 'short_text', value: 'users finish setup in minutes' }
+    ]
+  };
+  const get = t.mock.method(ClickUpClient.prototype, 'getTask', async () => task);
+  const update = t.mock.method(ClickUpClient.prototype, 'updateTask', async (taskId, updates) => {
+    task.description = updates.description;
+    return task;
+  });
+
+  for (const [index, name] of ['Persona', 'Goal', 'Benefit', 'Success'].entries()) {
+    await handleWebhook({
+      event: 'taskUpdated',
+      task_id: task.id,
+      history_items: [{
+        field: 'custom_field',
+        custom_field: { id: name.toLowerCase(), name, type: 'short_text' },
+        before: 'old value',
+        after: `stale ${index}`
+      }]
+    });
+  }
+
+  assert.equal(get.mock.callCount(), 4);
+  assert.equal(update.mock.callCount(), 1);
+  assert.deepEqual(update.mock.calls[0].arguments, [
+    'test-task',
+    { description: 'End user reduce setup time faster onboarding.  \r\nSuccess is when users finish setup in minutes.' }
+  ]);
+});
+
+test('description automation reports missing input fields without writing', async t => {
+  const task = {
+    id: 'test-task',
+    custom_fields: [{ id: 'persona', name: 'Persona', type: 'short_text', value: 'User' }]
+  };
+  t.mock.method(ClickUpClient.prototype, 'getTask', async () => task);
+  const update = t.mock.method(ClickUpClient.prototype, 'updateTask', async () => ({}));
+  const { logger } = require('../src/utils/logger');
+  const error = t.mock.method(logger, 'error', () => {});
+
+  await handleWebhook({
+    event: 'taskUpdated',
+    task_id: task.id,
+    history_items: [{
+      field: 'custom_field',
+      custom_field: { id: 'goal', name: 'Goal', type: 'short_text' },
+      after: 'New goal'
+    }]
+  });
+
+  assert.equal(update.mock.callCount(), 0);
+  assert.equal(error.mock.callCount(), 1);
+  assert.match(error.mock.calls[0].arguments[0], /custom-fields-to-task-description/);
 });
 
 test('multiple matching history items dispatch a rule only once', async t => {

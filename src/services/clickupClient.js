@@ -75,6 +75,11 @@ class ClickUpClient {
     return response.data;
   }
 
+  async createList(folderId, list) {
+    const response = await this.client.post(`/folder/${folderId}/list`, list);
+    return response.data;
+  }
+
   async getListFields(listId) {
     const response = await this.client.get(`/list/${listId}/field`);
     if (!Array.isArray(response.data.fields)) throw new Error('ClickUp returned invalid custom field metadata');
@@ -88,6 +93,21 @@ class ClickUpClient {
 
   async addTaskLink(taskId, sourceId) {
     await this.client.post(`/task/${taskId}/link/${sourceId}`);
+  }
+
+  async addTaskTag(taskId, tagName) {
+    await this.client.post(`/task/${taskId}/tag/${encodeURIComponent(tagName)}`);
+  }
+
+  async addTaskComment(taskId, commentText, notifyAll = true) {
+    const response = await this.client.post(`/task/${taskId}/comment`, {
+      comment_text: commentText, notify_all: notifyAll
+    });
+    return response.data;
+  }
+
+  async removeTaskTag(taskId, tagName) {
+    await this.client.delete(`/task/${taskId}/tag/${encodeURIComponent(tagName)}`);
   }
 
   async moveTask(workspaceId, taskId, listId, options) {

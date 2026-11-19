@@ -218,16 +218,19 @@ dates and archive flags are not treated as completion.
 
 `services/sprintTasks.js` is called by `SprintRouting`, not by a separate
 scheduler or duplicate automation rule. The resolver selects the sprint once.
-The item planner preflights shared Product/Persona field IDs, option UUIDs, and
-destination statuses before any backlog assignment/date writes. Preview returns
+The item planner preflights destination statuses before any backlog
+assignment/date writes. Sprint tasks carry no custom fields. Preview returns
 the plan without calling its applying methods.
 
-Creation uses API v2 with the source name, dropdown UUIDs, the initial
-`ready for development` status, a native task link, and a description ownership
-marker. Rescheduling uses API v3 to change the same item's home List. Existing
+Creation uses API v2 with the source name, description, Sprint Points, priority
+(from Backlog Priority), Item Type and Product tags, the initial
+`backlog` status (`sprintTasks.initialStatus`), a native task
+link, and a `Backlog task: <url>` line that doubles as the ownership marker.
+Restoring or moving refreshes the copied description, points, priority, and tags.
+Rescheduling uses API v3 to change the same item's home List. Existing
 development status is preserved by matching destination status names and mapping
 status IDs when necessary; no progress is copied back to Master Backlog.
-Names and dropdown values flow only from backlog to sprint.
+Names and the Product tag flow only from backlog to sprint.
 
 Discovery prefers native links and falls back to a per-run inventory of sprint
 Lists, including archived tasks, matched by exact source-ID markers. This also

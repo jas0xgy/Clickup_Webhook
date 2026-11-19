@@ -57,6 +57,13 @@ Moving to READY TO SCHEDULE instead explicitly clears Assigned Sprint and task
 dates and archives the linked sprint item. Scheduling it again restores that
 same item in the selected sprint with its development status preserved.
 
+Changes to any of the Persona, Goal, Benefit, or Success custom fields also
+refresh the task description using their current values:
+
+```text
+Persona Goal Benefit.\r\nSuccess is when Success.
+```
+
 ## Example 3: Task Comment Added
 
 This is what ClickUp sends when someone adds a comment:
@@ -110,7 +117,10 @@ Leave Assigned Sprint blank and set a positive Effort Estimate. Confirm it
 becomes READY TO SCHEDULE. Move it to SPRINT +1 and check its assignment and
 dates. Move it back to NEW BACKLOG and check it returns to SPRINT +1.
 Scheduling also creates a linked sprint task in the actual next sprint List,
-initially **ready for development**, with matching name/Product/Persona.
+initially **backlog**, with matching name, the copied
+description and backlog backlink, Effort Estimate as Sprint Points, Backlog
+Priority as the native priority, and the Item Type (Feature or Bug) and Product
+as tags.
 Change its development status, then reschedule the backlog task to SPRINT +2:
 the same linked task must move Lists and retain its development status.
 
@@ -165,9 +175,9 @@ node test-webhook.js
 - IN TESTING and later stages: preserve status.
 - Zero, blank, negative, or nonnumeric estimate: do not route.
 - Formula or unrelated field updates: do not trigger sprint routing.
-- Name/Product/Persona updates: sync an existing linked sprint item one way;
+- Name or Product updates: sync an existing linked sprint item one way;
   do not schedule the backlog task or reset its workflow status.
-- Clear Product/Persona: clear the corresponding sprint task dropdown.
+- Clear Product: remove the Product tag from the sprint task.
 - Drag to READY TO SCHEDULE or clear Assigned Sprint: archive the linked item.
 - Reschedule after unscheduling: restore the same item ID, preserve development
   status, and move it to the selected sprint (or restore in place).

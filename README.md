@@ -9,7 +9,8 @@ and priority-based Business Value.
 - ✅ Handles ClickUp webhook events (taskUpdated, taskStatusUpdated, taskCommentAdded, listUpdated)
 - ✅ Routes positive-estimate tasks to READY TO SCHEDULE or their assigned sprint
 - ✅ Reconciles sprint routing daily at 00:05 America/New_York
-- ✅ Creates linked sprint tasks and syncs their name, Product, and Persona
+- ✅ Keeps three future sprints in the Sprint Folder, creating the next sequential sprint as needed
+- ✅ Creates linked sprint tasks with descriptions, Sprint Points, and tags
 - ✅ Moves the same linked task when rescheduled, preserving development status
 - ✅ Maps Backlog Priority to Business Value in any task status
 - ✅ ClickUp API integration for reading and updating task data
@@ -69,13 +70,17 @@ placeholder secrets are rejected; signature verification must not be disabled.
 Requests are verified using HMAC-SHA256 over the original request bytes, with a
 hexadecimal signature and a timing-safe comparison.
 
-1. Identify your workspace ID and a test List ID.
+1. Identify your workspace ID and Space ID.
 2. Send an authenticated `POST` to
    `https://api.clickup.com/api/v2/team/{workspace_id}/webhook`.
 3. Include your public HTTPS `endpoint`, the desired `events` (for example,
-   `["taskUpdated"]`), and the test `list_id` in the JSON body.
-4. Save the returned `webhook.secret` in `.env`, then restart the service.
-5. Test using a disposable task in the subscribed List before using real tasks.
+   `["taskUpdated"]`), and the `space_id` in the JSON body. The webhook must
+   cover the whole Space: Master Backlog, the Sprint Folder (including folders
+   recreated later), and the testing List. A List-scoped webhook misses sprint
+   checkbox changes.
+4. Save the returned `webhook.secret` in `.env`, then restart the service. Each
+   webhook has its own secret, so delete superseded webhooks.
+5. Test using a disposable task before using real tasks.
 
 ## Running the Service
 
@@ -126,6 +131,8 @@ You should get a response like:
 5. Each rule checks its own conditions and skips unnecessary writes. Failures are
    logged with the task and rule name without blocking other matching rules.
    Webhook and scheduled work on the same task is serialized within this process.
+   Changes to Persona, Goal, Benefit, or Success rebuild the task description
+   using current field values, with Success on a new line.
 
 ### Sprint Routing
 
@@ -134,8 +141,8 @@ Effort Estimate is a positive number qualify. Numeric strings and positive
 fractions are accepted; missing, zero, negative, and nonnumeric estimates are not.
 
 The routing rule reacts to task status, Effort Estimate, and Assigned Sprint
-changes. Name, Product, and Persona changes also synchronize an existing linked
-sprint task without rerouting the backlog task. Formula and unrelated custom
+changes. Name and Product changes also synchronize an existing linked
+sprint task (its name and Product tag) without rerouting the backlog task. Formula and unrelated custom
 field updates do not trigger it. This
 replaces the old rule limited to an estimate changing from zero while the task
 was AWAITING ESTIMATION.
@@ -171,8 +178,11 @@ are protected. Explicitly clearing Assigned Sprint still clears start/due dates
 on a positive-estimate protected task, without moving its status backward.
 Other updates to protected tasks do not change their assignment or dates.
 
-The resolver reads actual List start/end timestamps from Sprint Folder. It
-does not parse yearless names, guess an earliest current sprint, infer completion
+The resolver reads actual List start/end timestamps from Sprint Folder. SPRINT 0
+is the active sprint containing today; before the first sprint or in a gap
+between sprints, it is the next active sprint to start. If every active sprint
+has ended, scheduling fails until upcoming sprint Lists are added. It
+does not parse yearless names, infer completion
 from an end date, or interpret archiving as completion. Archived/completed Lists
 remain available to resolve existing assignments but cannot be selected for new
 scheduling. Missing dates, overlapping active dates, missing status labels,
@@ -191,34 +201,49 @@ today's sprint, clear Assigned Sprint first, then move the task into SPRINT 0.
 For qualifying positive-estimate Master Backlog tasks, scheduling into SPRINT
 0/+1/+2 also creates one task in the actual sprint List:
 
-- Copies the task name and selected Product/Persona options from Master Backlog.
-- Starts new sprint tasks in **ready for development**.
-- Adds a native ClickUp task link and a backlink in the sprint task description.
+- Copies the task name and current description from Master Backlog. Sprint
+  tasks get no custom fields, so Sprint Folder needs none.
+- Sets native Sprint Points from Effort Estimate and adds the **Item Type**
+  selection as a tag when it is Feature or Bug, plus the **Product** label as a
+  tag. Other or blank selections add no tags. Enable the Sprint Points, Tags,
+  and Priorities ClickApps; otherwise a warning is logged.
+- Sets the native priority from **Backlog Priority**: Critical → Urgent;
+  Must Have and Workaround Exists → High; Nice to Have → Normal; Minor Impact →
+  Low. Blank leaves priority unset; an unmapped option is an error.
+- Does not copy the Product, Persona, Goal, Benefit, or Success custom fields.
+- Starts new sprint tasks in **backlog** (`sprintTasks.initialStatus` in
+  `src/config.js`).
+- Adds a native ClickUp task link and a `Backlog task: <url>` line in the sprint
+  task description.
 - Rescheduling moves the **same sprint task**, removing it from its previous
-  home List. Its development status and other task details are preserved.
-- Later name/Product/Persona changes sync one way, from backlog to sprint.
-  Clearing either dropdown clears it on the linked task too.
+  home List. Its development status is preserved.
+- Later name and Product changes sync one way, from backlog to sprint: the
+  Product tag is swapped for the new label (other Product option tags are
+  removed), and clearing Product removes it. The copied description,
+  points, priority, and tags are refreshed when the sprint task is created, restored, or
+  moved, not by later metadata-only edits. Refreshing replaces the sprint task
+  description and adds missing tags without removing others.
 - IN TESTING and later backlog stages remain protected, but their existing
   linked tasks can still receive metadata updates.
 - Dragging to READY TO SCHEDULE or clearing Assigned Sprint archives the linked
   item, hiding it from active sprint views. Views explicitly including archived
   tasks can still show it in its last home List.
 - Scheduling again restores that **same task**, moves it to the selected sprint,
-  and refreshes name/Product/Persona without resetting development progress.
+  and refreshes its name and copied details without resetting development progress.
   Scheduling back into the same sprint restores it there too.
 - Metadata sync pauses while unscheduled. Repeated unscheduling is idempotent;
   it does not create, delete, or repeatedly archive extra tasks.
 
-Add the **existing** Product and Persona dropdowns at Sprint Folder level so
-future sprint Lists inherit the same field IDs and options. Do not create
-same-name replacement fields. Destination Lists must support the sprint task's
+Destination Lists must support the sprint task's
 current status; an incompatible destination produces an error, not a status reset.
 
 `src/services/sprintTasks.js` owns discovery, planning, and application. It shares
 the sprint resolver and per-task lock used by webhooks and reconciliation.
-Native task links and the description line `Managed backlog task ID: <id>`
-provide persistent ownership and restart recovery without a local mapping file.
-Keep that marker and the native link intact; do not clone managed descriptions.
+Native task links and the description line `Backlog task: <url>` (ending in the
+backlog task ID) provide persistent ownership and restart recovery without a
+local mapping file. Older items with `Managed backlog task ID: <id>` are still
+recognized; that line is replaced the next time the item is restored or moved.
+Keep the backlink line and native link intact; do not clone managed descriptions.
 Unmarked linked sprint tasks, duplicates, and linked managed items moved outside
 Sprint Folder require manual review. Archived managed tasks are restored only
 when reconciling an unprotected assignment in an unarchived, uncompleted sprint,
@@ -227,7 +252,7 @@ not by metadata-only changes or historical/protected reconciliation.
 The daily check and applying reconciliation also repair missing or out-of-sync
 items for unprotected assignments in unarchived, uncompleted sprints. They do
 not create missing items for protected tasks or completed/archived sprints.
-Name/Product/Persona-only events sync existing items without creating new ones.
+Name or Product changes sync existing items without creating new ones.
 Preview remains GET-only and includes a `sprintTask` plan with `create`, `sync`,
 `archive`, or `none` actions (`restoring: true` denotes restoration).
 Applying reconciliation can therefore create, move, archive, or restore linked
@@ -275,6 +300,113 @@ time. It requires the service and computer to remain running. Starting the
 service after the scheduled time does not run an unexpected catch-up bulk
 update; use the commands above for a missed run. A failed daily run is logged,
 not silently retried all day.
+
+### Automatic Sprint Creation
+
+Before reconciling, the daily check (and `sprints:preview`/`sprints:reconcile`)
+makes sure at least `sprintCreation.futureSprints` (3) unarchived, uncompleted
+sprints start after today. If not, it creates the next sequential sprint Lists in
+the Sprint Folder:
+
+- Numbered after the highest existing `Sprint <n>` and named
+  `Sprint <n> (M/D - M/D)`.
+- Starting the day after the latest sprint ends, with the same length, from
+  00:00 to 23:59:59 America/New_York (daylight saving handled).
+- New Lists inherit the Sprint Folder's statuses.
+
+The preview lists planned sprints without creating them. If creation fails, the
+error is logged and backlog reconciliation still runs. Set
+`sprintCreation.enabled` to `false` to turn this off.
+
+### Daily Health Email
+
+After each daily check, the service emails `healthEmail.to` (john@towpro.io)
+with subject **Clickup Webhook Service is healthy** and a summary (tasks
+scanned/updated, sprints created). If the check or sprint creation fails, the
+subject is **Clickup Webhook Service daily check FAILED** and the body includes
+the errors. Email problems are logged and never stop the daily check. No email
+arriving means the service or computer was not running.
+
+It sends through Gmail / Google Workspace SMTP. Add to `.env`:
+
+```env
+SMTP_USER=you@gmail.com
+SMTP_PASS=your-16-character-app-password
+# Optional: SMTP_FROM (defaults to SMTP_USER), SMTP_HOST (smtp.gmail.com), SMTP_PORT (587)
+```
+
+`SMTP_PASS` must be a Google **app password**, not your normal password: turn on
+2-Step Verification for the sending account, then create one at
+https://myaccount.google.com/apppasswords (Google Workspace admins may need to
+allow app passwords). Any other SMTP provider works by setting `SMTP_HOST` and
+`SMTP_PORT`.
+
+Alternatively, use Google OAuth (no app password). When `GMAIL_CLIENT_ID` is
+set, OAuth is used instead of `SMTP_PASS`:
+
+1. In Google Cloud Console, enable the **Gmail API** and create an OAuth client
+   of type **Desktop app** (for a **Web application** client, add the redirect
+   URI `http://localhost:53682/oauth2callback`). On the OAuth consent screen,
+   use **Internal** (Workspace) or publish the app; in **Testing** mode Google
+   expires refresh tokens after 7 days.
+2. Set `SMTP_USER` (the sending Gmail address), `GMAIL_CLIENT_ID`, and
+   `GMAIL_CLIENT_SECRET` in `.env`.
+3. Run `npm run gmail:auth`, sign in as `SMTP_USER`, and allow access. The
+   refresh token is saved to `.env` as `GMAIL_REFRESH_TOKEN`.
+
+Send a test now with `npm run health:email` (uses a read-only preview; nothing
+in ClickUp changes).
+
+### Acceptance Testing Hand-off
+
+Checking **Ready for acceptance testing** on a sprint task:
+
+- Creates one copy of its Master Backlog task in the testing List
+  (`acceptanceTesting.listId` in `src/config.js`) with status **ready to test**,
+  the same copied details as the sprint task (name, description with the
+  `Backlog task: <url>` link, Sprint Points, priority, tags), and a native link
+  to the backlog task.
+- Moves the sprint task to **testing** and the Master Backlog task to
+  **IN TESTING**.
+- Re-checking reuses the existing copy (found by native link or backlink line)
+  instead of creating another; only missing status moves are applied.
+- Unchecking does nothing. The sprint task must keep its `Backlog task:` line.
+
+Moving a testing List task to **test complete** moves its linked Master Backlog
+task (found through the testing task's `Backlog task:` line) from **IN TESTING**
+to **READY TO DEPLOY**. If the backlog task is already READY TO DEPLOY, nothing
+happens. If it is in any other status, or the link is missing, the backlog task
+is left alone and the automation posts a comment on the testing task (notifying
+its watchers) explaining the problem, and logs an error.
+
+Recreating the testing List changes its ID; update `acceptanceTesting.listId`.
+
+### Estimation Hand-off
+
+Moving a Master Backlog task to **AWAITING ESTIMATION** creates one copy in the
+Awaiting Estimation List (`estimation.listId` in `src/config.js`) with status
+**awaiting estimate**, the same description (story text plus the
+`Backlog task: <url>` link) and tags (Item Type Feature/Bug, Product) as sprint
+items, and a native link to the backlog task. If a copy already exists (found
+by native link or backlink line), no new one is created.
+
+Moving that copy to **estimate ready** with a non-zero Effort Estimate sets the
+Master Backlog task's Effort Estimate to the same value. If the estimate is
+empty or zero, or the backlink is missing, the backlog task is left alone and
+the automation comments on the estimation task (notifying its watchers).
+
+Recreating the Awaiting Estimation List changes its ID; update `estimation.listId`.
+
+### Archiving Hand-off Copies
+
+- Moving a Master Backlog task to **sprint 0**, **sprint +1**, or **sprint +2**
+  archives its copies in Awaiting Estimation (`estimation.archiveOnStatuses`).
+- Moving a Master Backlog task to **deployed** archives its copies in Testing
+  Items (`acceptanceTesting.archiveOnStatuses`).
+- Copies are found by native link or `Backlog task:` line; unrelated tasks are
+  never archived. If the task later returns to AWAITING ESTIMATION (or is sent
+  to acceptance testing again), the archived copy is restored and reset to its
+  starting status instead of creating a duplicate.
 
 ### Backlog Priority to Business Value
 
@@ -392,11 +524,11 @@ to SPRINT +1 without changing its assignment. Clear Assigned Sprint and verify
 READY TO SCHEDULE with start/due dates cleared. Use `sprints:preview` to inspect
 bulk results before applying anything. Keep the service and tunnel running.
 
-Check that scheduling creates a linked **ready for development** task with the
-same name/Product/Persona in the correct sprint List. Set the sprint task to
+Check that scheduling creates a linked **backlog** task with the
+same name and Product tag in the correct sprint List. Set the sprint task to
 **in development**, then move the backlog task to a different sprint column.
 Verify that the same sprint task moves Lists without losing its development
-status. Rename the backlog task and change/clear its dropdowns to verify one-way
+status. Rename the backlog task and change/clear its Product to verify one-way
 sync. Drag back to READY TO SCHEDULE and verify the assignment/dates clear and
 the sprint item is archived. Schedule again into the same or another sprint:
 the same item ID and development status must be retained.
@@ -454,6 +586,19 @@ All activities are logged with timestamps. Logs include:
 - API calls to ClickUp
 - Errors and warnings
 - Debug information (in development mode)
+
+Every log line is also appended to a daily file, `logs/YYYY-MM-DD.log`
+(git-ignored). Files include debug lines (full webhook payloads) even when the
+console hides them, and are deleted after 30 days. Each handled task webhook
+adds one `AUDIT` line with JSON: event, task ID, user, changes, and every rule
+run with its outcome (`applied`, `skipped`, `flagged`, `failed` + error, ...).
+
+To trace a task, search the logs for its ID, e.g.
+`Select-String -Path logs\*.log -Pattern 86e418r6v`.
+
+Settings (`.env`, optional): `LOG_DIR` (default `logs`),
+`LOG_RETENTION_DAYS` (default 30), `LOG_TO_FILE=false` to disable. Test runs
+never write log files.
 
 ## Security
 

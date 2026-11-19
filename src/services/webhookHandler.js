@@ -1,11 +1,17 @@
 const { ClickUpClient } = require('./clickupClient');
 const { automationRules } = require('./automationRules');
 const { SprintRouting } = require('./sprintRouting');
+const { AcceptanceTesting } = require('./acceptanceTesting');
+const { Estimation } = require('./estimation');
+const { SprintCreation } = require('./sprintCreation');
 const { sprintRouting: sprintConfig } = require('../config');
 const { logger } = require('../utils/logger');
 
 const clickup = new ClickUpClient();
 const sprintRouting = new SprintRouting(clickup, sprintConfig);
+const acceptanceTesting = new AcceptanceTesting(clickup, sprintConfig, sprintRouting);
+const estimation = new Estimation(clickup, sprintConfig, sprintRouting);
+const sprintCreation = new SprintCreation(clickup, sprintConfig, sprintRouting);
 
 /**
  * Handles incoming webhook events from ClickUp
@@ -36,6 +42,21 @@ async function handleWebhook(event) {
   }
 }
 
+function describeChange(change) {
+  const value = side => side?.status ?? side?.name ?? (typeof side === 'object' ? undefined : side);
+  return {
+    field: change?.custom_field?.name || change?.field,
+    before: value(change?.before), after: value(change?.after)
+  };
+}
+
+function ruleOutcome(result) {
+  if (result && typeof result === 'object') {
+    return { outcome: result.outcome || 'done', ...(result.reason ? { reason: result.reason } : {}) };
+  }
+  return { outcome: 'done' };
+}
+
 async function handleTaskUpdated(event) {
   logger.info('Task updated event received');
 
@@ -44,6 +65,22 @@ async function handleTaskUpdated(event) {
     return;
   }
 
+  const audit = {
+    event: event.event, taskId: event.task_id, webhookId: event.webhook_id,
+    user: event.history_items[0]?.user?.username,
+    changes: event.history_items.map(describeChange), rules: []
+  };
+  try {
+    await runMatchingRules(event, audit);
+  } catch (error) {
+    audit.error = error.message;
+    throw error;
+  } finally {
+    logger.audit(audit);
+  }
+}
+
+async function runMatchingRules(event, audit) {
   const matchingRules = automationRules.map(rule => ({
     rule,
     changes: event.history_items.filter(change =>
@@ -66,12 +103,15 @@ async function handleTaskUpdated(event) {
       const field = rule.sourceField ? clickup.getCustomField(task, rule.sourceField) : null;
       if (rule.sourceField && (!field || !changes.some(change => change.custom_field.id === field.id))) {
         logger.warn(`Task ${event.task_id}: rule "${rule.name}" has no matching current source field`);
+        audit.rules.push({ rule: rule.name, outcome: 'skipped', reason: 'no matching current source field' });
         continue;
       }
       try {
-        await rule.run({ task, field, changes, clickup, sprintRouting });
+        const result = await rule.run({ task, field, changes, clickup, sprintRouting, acceptanceTesting, estimation });
+        audit.rules.push({ rule: rule.name, ...ruleOutcome(result) });
       } catch (error) {
         logger.error(`Task ${event.task_id}: automation "${rule.name}" failed:`, error.message);
+        audit.rules.push({ rule: rule.name, outcome: 'failed', error: error.message });
       }
     }
   });
@@ -106,5 +146,15 @@ async function handleListUpdated(event) {
 
 module.exports = {
   handleWebhook,
-  reconcileSprints: options => sprintRouting.reconcileBacklog(options)
+  reconcileSprints: async options => {
+    let sprints;
+    try {
+      sprints = await sprintCreation.ensureFutureSprints(options);
+    } catch (error) {
+      logger.error('Sprint creation failed:', error.message);
+      sprints = { dryRun: Boolean(options?.dryRun), planned: [], created: [], error: error.message };
+    }
+    const result = await sprintRouting.reconcileBacklog(options);
+    return { ...result, sprintCreation: sprints };
+  }
 };

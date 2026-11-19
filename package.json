@@ -7,15 +7,22 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "sprints:preview": "node src/reconcileSprints.js --dry-run",
-    "sprints:reconcile": "node src/reconcileSprints.js --apply"
+    "sprints:reconcile": "node src/reconcileSprints.js --apply",
+    "health:email": "node src/sendHealthEmail.js",
+    "gmail:auth": "node src/gmailAuth.js"
   },
-  "keywords": ["clickup", "webhook", "automation"],
+  "keywords": [
+    "clickup",
+    "webhook",
+    "automation"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "express": "^4.18.2",
     "axios": "^1.6.0",
-    "dotenv": "^16.3.1"
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "nodemailer": "^10.6.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

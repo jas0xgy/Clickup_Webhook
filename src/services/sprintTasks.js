@@ -1,13 +1,42 @@
 const { logger } = require('../utils/logger');
+const { numberValue } = require('../utils/fields');
 
-const fieldNames = ['Product', 'Persona'];
+const tagField = 'Item Type';
+const tagOptions = new Set(['feature', 'bug']);
+const productTagField = 'Product';
+const priorityField = 'Backlog Priority';
+// ClickUp priorities: 1 urgent, 2 high, 3 normal, 4 low. Labels match by prefix ("Critical (Blocker, ...)").
+const priorityMap = [
+  ['critical', 1], ['must have', 2], ['workaround exists', 2], ['nice to have', 3], ['minor impact', 4]
+];
 const normalize = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
 const isEmpty = value => value == null || value === '';
-const markerFor = sourceId => `Managed backlog task ID: ${sourceId}`;
+const legacyMarkerFor = sourceId => `Managed backlog task ID: ${sourceId}`;
+const backlinkFor = source => `Backlog task: ${source.url || `https://app.clickup.com/t/${source.id}`}`;
+const sameText = (a, b) => typeof a === 'string' && typeof b === 'string' &&
+  a.replace(/\r\n/g, '\n').trim() === b.replace(/\r\n/g, '\n').trim();
+const priorityOf = item => Number(item.priority?.id) || null;
+const hasTag = (item, tag) => (item.tags || []).some(value => normalize(value?.name) === normalize(tag));
 
+// The backlink line doubles as the ownership marker; the legacy line is still recognized.
 function isManaged(item, sourceId) {
   return [item.description, item.text_content].some(text =>
-    typeof text === 'string' && text.split(/\r?\n/).some(line => line === markerFor(sourceId)));
+    typeof text === 'string' && text.split(/\r?\n/).map(line => line.trim()).some(line =>
+      line === legacyMarkerFor(sourceId) ||
+      (line.startsWith('Backlog task: ') && line.endsWith(`/t/${sourceId}`))));
+}
+
+// Returns the backlog task ID a managed copy points to, from its backlink or legacy marker line.
+function sourceIdOf(item) {
+  for (const text of [item.description, item.text_content]) {
+    if (typeof text !== 'string') continue;
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      const match = /^Backlog task: \S*\/t\/([^/\s]+)$/.exec(line) || /^Managed backlog task ID: (\S+)$/.exec(line);
+      if (match) return match[1];
+    }
+  }
+  return null;
 }
 
 function linkedIds(task) {
@@ -28,14 +57,50 @@ class SprintTasks {
     this.config = config;
   }
 
-  dropdownValue(field) {
-    if (!field?.id || field.type !== 'drop_down') {
-      throw new Error('Product and Persona must be accessible dropdown custom fields on both tasks');
-    }
-    if (isEmpty(field.value)) return null;
-    const option = this.clickup.getDropdownOption(field);
-    if (!option?.id) throw new Error(`Cannot resolve "${field.name}" dropdown value "${field.value}"`);
-    return option.id;
+  dropdownLabel(source, name) {
+    const field = this.clickup.getCustomField(source, name);
+    if (isEmpty(field?.value)) return null;
+    const label = field.type === 'drop_down' && this.clickup.getDropdownOption(field)?.name?.trim();
+    if (!label) throw new Error(`Cannot resolve "${name}" dropdown value "${field.value}"`);
+    return label;
+  }
+
+  // Product is carried only as a tag; other Product option labels are stale tags to remove.
+  productTags(source) {
+    const current = this.dropdownLabel(source, productTagField);
+    const options = this.clickup.getCustomField(source, productTagField)?.type_config?.options || [];
+    const stale = options.map(option => option.name?.trim())
+      .filter(name => name && normalize(name) !== normalize(current));
+    return { current, stale };
+  }
+
+  sprintTags(source) {
+    const itemType = this.dropdownLabel(source, tagField);
+    return [itemType && tagOptions.has(normalize(itemType)) ? itemType : null,
+      this.productTags(source).current].filter(Boolean);
+  }
+
+  sprintPriority(source) {
+    const label = this.dropdownLabel(source, priorityField);
+    if (!label) return null;
+    const match = priorityMap.find(([prefix]) => normalize(label).startsWith(prefix));
+    if (!match) throw new Error(`No ClickUp priority mapping for "${priorityField}" option "${label}"`);
+    return match[1];
+  }
+
+  // Description (story text plus backlink) and tags shared by every managed copy of a backlog task.
+  copiedText(source) {
+    // List responses may omit descriptions; never replace a copy's description with only the backlink then.
+    const description = typeof source.description === 'string' ?
+      [source.description.trim(), backlinkFor(source)].filter(Boolean).join('\n\n') : null;
+    return { description, tags: this.sprintTags(source) };
+  }
+
+  copiedDetails(source) {
+    const points = numberValue(this.clickup.getCustomField(source, 'Effort Estimate')?.value);
+    if (!(points > 0)) throw new Error(`Backlog task ${source.id} has no positive Effort Estimate for Sprint Points`);
+    const { description, tags } = this.copiedText(source);
+    return { description, points, tags, priority: this.sprintPriority(source) };
   }
 
   async inventory(catalog) {
@@ -68,6 +133,8 @@ class SprintTasks {
         logger.warn(`Linked task ${id} on backlog task ${source.id} no longer exists`);
         continue;
       }
+      if (String(item.list?.id) === String(this.config.acceptanceTesting?.listId)) continue;
+      if (String(item.list?.id) === String(this.config.estimation?.listId)) continue;
       if (isManaged(item, source.id)) linked.push(item);
       else if (catalog.sprints.some(sprint => sprint.id === String(item.list?.id))) unmarked.push(item.id);
     }
@@ -109,35 +176,21 @@ class SprintTasks {
     if (typeof source.name !== 'string' || !source.name.trim()) {
       throw new Error(`Backlog task ${source.id} has no valid task name`);
     }
-    const [list, fields] = await Promise.all([
-      this.clickup.getList(sprint.id), this.clickup.getListFields(sprint.id)
-    ]);
+    const list = await this.clickup.getList(sprint.id);
     if (!Array.isArray(list.statuses)) throw new Error(`Sprint List ${sprint.id} has no status metadata`);
-    const desiredFields = fieldNames.map(name => {
-      const sourceField = this.clickup.getCustomField(source, name);
-      const destination = this.clickup.getCustomField({ custom_fields: fields }, name);
-      const value = this.dropdownValue(sourceField);
-      if (destination?.type !== 'drop_down' || destination.id !== sourceField.id) {
-        throw new Error(`Sprint "${sprint.name}" must expose the same existing "${name}" dropdown as Master Backlog`);
-      }
-      if (value !== null && !destination.type_config?.options?.some(option => option.id === value)) {
-        throw new Error(`Sprint "${sprint.name}" is missing the selected "${name}" option`);
-      }
-      return { id: destination.id, name, value };
-    });
-    const base = {
-      sourceId: source.id, listId: sprint.id, name: source.name, desiredFields
-    };
+    const base = { sourceId: source.id, listId: sprint.id, name: source.name };
     if (!item) {
       const status = list.statuses.find(value => normalize(value.status) === normalize(this.config.sprintTasks.initialStatus));
       if (!status) throw new Error(`Sprint "${sprint.name}" has no "${this.config.sprintTasks.initialStatus}" status`);
+      const details = this.copiedDetails(source);
       return {
-        ...base, changed: true, action: 'create', expectedStatus: status.status,
+        ...base, changed: true, action: 'create', expectedStatus: status.status, details,
         create: {
           name: source.name, status: status.status, links_to: source.id,
-          description: `Backlog task: ${source.url || `https://app.clickup.com/t/${source.id}`}\n\n${markerFor(source.id)}`,
-          custom_fields: desiredFields.filter(field => field.value !== null).map(({ id, value }) => ({ id, value })),
-          notify_all: false, check_required_custom_fields: true
+          description: details.description || backlinkFor(source),
+          points: details.points, tags: details.tags,
+          ...(details.priority ? { priority: details.priority } : {}),
+          notify_all: false
         }
       };
     }
@@ -156,18 +209,28 @@ class SprintTasks {
         }];
       }
     }
-    const fieldUpdates = desiredFields.filter(field => {
-      const current = this.clickup.getCustomField(item, field.name);
-      if (current?.id !== field.id) throw new Error(`Sprint item ${item.id} is missing the shared "${field.name}" field`);
-      return this.dropdownValue(current) !== field.value;
-    });
     const updates = item.name === source.name ? {} : { name: source.name };
+    // Scheduling (restore or move) refreshes copied details; metadata-only syncs leave sprint edits alone.
+    const details = moving || restoring ? this.copiedDetails(source) : null;
+    const product = this.productTags(source);
+    const wantedTags = details ? details.tags : [product.current].filter(Boolean);
+    if (details) {
+      if (details.description !== null && !sameText(item.description, details.description)) {
+        updates.description = details.description;
+      }
+      if (numberValue(item.points) !== details.points) updates.points = details.points;
+      if (details.priority && priorityOf(item) !== details.priority) updates.priority = details.priority;
+    }
+    const tagsToAdd = wantedTags.filter(tag => !hasTag(item, tag));
+    const tagsToRemove = (item.tags || []).map(tag => tag?.name)
+      .filter(name => product.stale.some(stale => normalize(stale) === normalize(name)));
     const linkRequired = !linkedIds(item).includes(source.id);
     return {
       ...base, action: 'sync', itemId: item.id, moving, restoring, moveOptions, updates,
       expectedStatus: moving || restoring ? item.status.status : null,
-      fieldUpdates, linkRequired,
-      changed: moving || restoring || fieldUpdates.length > 0 || Object.keys(updates).length > 0 || linkRequired
+      linkRequired, details, tagsToAdd, tagsToRemove,
+      changed: moving || restoring || Object.keys(updates).length > 0 ||
+        linkRequired || tagsToAdd.length > 0 || tagsToRemove.length > 0
     };
   }
 
@@ -181,22 +244,16 @@ class SprintTasks {
       if (!created?.id) throw new Error('Sprint task creation returned no task ID; inspect the sprint before retrying');
       itemId = created.id;
     } else {
-      let fieldUpdates = plan.fieldUpdates;
       if (plan.restoring) await this.clickup.updateTask(itemId, { archived: false });
       if (plan.moving) {
         const moved = await this.clickup.moveTask(this.config.workspaceId, itemId, plan.listId, plan.moveOptions);
         if (String(moved?.new_list_id) !== plan.listId) {
           throw new Error(`Sprint item ${itemId} move did not confirm the requested List`);
         }
-        const movedTask = await this.clickup.getTask(itemId);
-        fieldUpdates = plan.desiredFields.filter(field =>
-          this.dropdownValue(this.clickup.getCustomField(movedTask, field.name)) !== field.value);
       }
       if (Object.keys(plan.updates).length > 0) await this.clickup.updateTask(itemId, plan.updates);
-      for (const field of fieldUpdates) {
-        if (field.value === null) await this.clickup.clearCustomFieldValue(itemId, field.id);
-        else await this.clickup.setCustomFieldValue(itemId, field.id, field.value);
-      }
+      for (const tag of plan.tagsToRemove || []) await this.clickup.removeTaskTag(itemId, tag);
+      for (const tag of plan.tagsToAdd || []) await this.clickup.addTaskTag(itemId, tag);
     }
     let actual = await this.clickup.getTask(itemId);
     if (plan.action !== 'archive' && !linkedIds(actual).includes(plan.sourceId)) {
@@ -209,9 +266,21 @@ class SprintTasks {
     if (!isManaged(actual, plan.sourceId) || String(actual.list?.id) !== plan.listId ||
         (plan.expectedStatus && normalize(actual.status?.status) !== normalize(plan.expectedStatus)) ||
         (plan.action === 'archive' ? actual.archived !== true :
-          actual.archived === true || actual.name !== plan.name || plan.desiredFields.some(field =>
-            this.dropdownValue(this.clickup.getCustomField(actual, field.name)) !== field.value))) {
-      throw new Error(`Sprint item ${itemId} did not retain its requested archive state/marker/List/name/status/Product/Persona; inspect it and reconcile again`);
+          actual.archived === true || actual.name !== plan.name)) {
+      throw new Error(`Sprint item ${itemId} did not retain its requested archive state/marker/List/name/status; inspect it and reconcile again`);
+    }
+    const missing = [];
+    const missingTags = (plan.tagsToAdd || plan.details?.tags || []).filter(tag => !hasTag(actual, tag));
+    if (missingTags.length > 0) missing.push(`tags ${missingTags.join(', ')}`);
+    if (plan.details) {
+      if (numberValue(actual.points) !== plan.details.points) missing.push(`Sprint Points ${plan.details.points}`);
+      if (plan.details.priority && priorityOf(actual) !== plan.details.priority) {
+        missing.push(`priority ${plan.details.priority}`);
+      }
+    }
+    if (missing.length > 0) {
+      logger.warn(`Sprint item ${itemId} did not retain ${missing.join(', ')}; ` +
+        'check that the Sprint Points, Tags, and Priority ClickApps are enabled');
     }
     if (catalog.sprintTaskInventory) {
       const inventory = await catalog.sprintTaskInventory;
@@ -226,4 +295,4 @@ class SprintTasks {
   }
 }
 
-module.exports = { SprintTasks };
+module.exports = { SprintTasks, isManaged, sourceIdOf, linkedIds };
