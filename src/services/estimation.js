@@ -5,6 +5,8 @@ const { isManaged, sourceIdOf, linkedIds } = require('./sprintTasks');
 
 const normalize = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
 const statusName = task => normalize(task.status?.status);
+const duplicateReason = (sourceId, copies) =>
+  `Multiple active estimation copies for backlog task ${sourceId}: ${copies.map(copy => copy.id).sort().join(', ')}. Resolve the duplicate copies before retrying.`;
 
 class Estimation {
   constructor(clickup, config, sprintRouting) {
@@ -14,27 +16,32 @@ class Estimation {
     this.sprintRouting = sprintRouting;
   }
 
-  // Reuse an existing copy found via native links, then via a scan of the estimation List.
-  async findCopy(source) {
+  async findCopies(source, { archived = false } = {}) {
+    const copies = new Map();
+    const consider = item => {
+      if (String(item.list?.id) === this.settings.listId && Boolean(item.archived) === archived &&
+          isManaged(item, source.id)) copies.set(item.id, item);
+    };
+    const listed = new Set();
+    for (const item of await this.clickup.getListTasks(this.settings.listId, { archived })) {
+      listed.add(item.id);
+      consider(typeof item.description === 'string' ? item : await this.clickup.getTask(item.id));
+    }
     for (const id of linkedIds(source)) {
-      let item;
+      if (listed.has(id)) continue;
       try {
-        item = await this.clickup.getTask(id);
+        consider(await this.clickup.getTask(id));
       } catch (error) {
-        if (error.response?.status === 404) continue;
-        throw error;
+        if (error.response?.status !== 404) throw error;
       }
-      if (String(item.list?.id) === this.settings.listId && isManaged(item, source.id)) return item;
     }
-    const pages = await Promise.all([
-      this.clickup.getListTasks(this.settings.listId),
-      this.clickup.getListTasks(this.settings.listId, { archived: true })
-    ]);
-    for (const item of pages.flat()) {
-      const full = typeof item.description === 'string' ? item : await this.clickup.getTask(item.id);
-      if (String(full.list?.id) === this.settings.listId && isManaged(full, source.id)) return full;
-    }
-    return null;
+    return [...copies.values()];
+  }
+
+  flagDuplicateCopies(sourceId, copies) {
+    const reason = duplicateReason(sourceId, copies);
+    logger.warn(reason);
+    return { outcome: 'flagged', reason };
   }
 
   async initialStatus() {
@@ -55,8 +62,10 @@ class Estimation {
       logger.debug(`Task ${source.id}: no longer "${this.settings.triggerStatus}"`);
       return { outcome: 'skipped' };
     }
+    const active = await this.findCopies(source);
+    if (active.length > 1) return this.flagDuplicateCopies(source.id, active);
+    const existing = active[0] ?? (await this.findCopies(source, { archived: true }))[0];
     await ensureUserStory(this.clickup, source, this.config.backlogListId);
-    const existing = await this.findCopy(source);
     if (existing?.archived) {
       await this.clickup.updateTask(existing.id, { archived: false });
       await this.clickup.updateTask(existing.id, { status: await this.initialStatus() });
@@ -86,7 +95,9 @@ class Estimation {
       return { outcome: 'skipped' };
     }
 
-    const copy = await this.findCopy(source);
+    const active = await this.findCopies(source);
+    if (active.length > 1) return this.flagDuplicateCopies(source.id, active);
+    const copy = active[0] ?? (await this.findCopies(source, { archived: true }))[0];
     if (!copy || copy.id === source.id) return { outcome: 'unchanged' };
     try {
       const currentCopy = await this.clickup.getTask(copy.id);
@@ -110,21 +121,35 @@ class Estimation {
   }
 
   async complete(estimateTask) {
+    const record = { estimationTaskId: estimateTask.id, backlogTaskId: null, estimate: null, outcome: 'failed' };
+    try {
+      const result = await this.applyEstimate(estimateTask, record);
+      record.outcome = result.outcome;
+      if (result.reason) record.reason = result.reason;
+      return result;
+    } finally {
+      logger.info('Estimation handoff', JSON.stringify(record));
+    }
+  }
+
+  async applyEstimate(estimateTask, record) {
     const { readyStatus, estimateField } = this.settings;
     if (String(estimateTask.list?.id) !== this.settings.listId) {
       logger.debug(`Task ${estimateTask.id}: not in the estimation List; ignoring "${readyStatus}"`);
       return { outcome: 'skipped' };
     }
-    if (statusName(estimateTask) !== normalize(readyStatus)) {
-      logger.debug(`Task ${estimateTask.id}: no longer "${readyStatus}"`);
+    const sourceId = sourceIdOf(estimateTask);
+    record.backlogTaskId = sourceId;
+    const estimate = numberValue(this.clickup.getCustomField(estimateTask, estimateField)?.value);
+    record.estimate = Number.isFinite(estimate) ? estimate : null;
+    if (estimateTask.archived || statusName(estimateTask) !== normalize(readyStatus)) {
+      logger.debug(`Task ${estimateTask.id}: archived or no longer "${readyStatus}"`);
       return { outcome: 'skipped' };
     }
-    const estimate = numberValue(this.clickup.getCustomField(estimateTask, estimateField)?.value);
     if (!(estimate > 0)) {
       return this.flag(estimateTask, `${estimateField} is empty or zero, so it was not copied to the Master Backlog task. ` +
         `Enter a non-zero ${estimateField} and move this task to ${readyStatus.toUpperCase()} again.`);
     }
-    const sourceId = sourceIdOf(estimateTask);
     if (!sourceId) {
       return this.flag(estimateTask, `this task has no "Backlog task:" link to its Master Backlog task, so ${estimateField} was not copied.`);
     }
@@ -134,16 +159,18 @@ class Estimation {
       if (String(source.list?.id) !== this.config.backlogListId) {
         return this.flag(estimateTask, `linked task ${sourceId} is not in Master Backlog, so ${estimateField} was not copied.`);
       }
+      const active = await this.findCopies(source);
+      // The fetched triggering task may not yet be visible in the list response.
+      if (!active.some(copy => copy.id === estimateTask.id)) active.push(estimateTask);
+      if (active.length > 1) return this.flag(estimateTask, duplicateReason(sourceId, active));
       const target = this.clickup.getCustomField(source, estimateField);
       if (!target?.id || target.type !== 'number') {
         throw new Error(`Master Backlog task ${source.id} has no numeric "${estimateField}" field`);
       }
       if (numberValue(target.value) === estimate) {
-        logger.info(`Backlog task ${source.id}: ${estimateField} is already ${estimate}`);
         return { outcome: 'unchanged', sourceId };
       }
       await this.clickup.setCustomFieldValue(source.id, target.id, estimate);
-      logger.info(`Backlog task ${source.id}: ${estimateField} set to ${estimate} from estimation task ${estimateTask.id}`);
       return { outcome: 'applied', sourceId, estimate };
     });
   }
@@ -151,7 +178,7 @@ class Estimation {
   async flag(estimateTask, problem) {
     logger.error(`Estimation task ${estimateTask.id}: ${problem}`);
     await this.clickup.addTaskComment(estimateTask.id, `[Workflow Agent] Automation could not update the estimate: ${problem}`);
-    return { outcome: 'flagged' };
+    return { outcome: 'flagged', reason: problem };
   }
 }
 

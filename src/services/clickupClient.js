@@ -105,9 +105,10 @@ class ClickUpClient {
     await this.client.post(`/task/${taskId}/tag/${encodeURIComponent(tagName)}`);
   }
 
-  async addTaskComment(taskId, commentText, notifyAll = true) {
+  async addTaskComment(taskId, content, notifyAll = true) {
     const response = await this.client.post(`/task/${taskId}/comment`, {
-      comment_text: commentText, notify_all: notifyAll
+      ...(Array.isArray(content) ? { comment: content } : { comment_text: content }),
+      notify_all: notifyAll
     });
     return response.data;
   }

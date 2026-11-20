@@ -109,9 +109,11 @@ async function runMatchingRules(event, audit) {
       try {
         const result = await rule.run({ task, field, changes, clickup, sprintRouting, acceptanceTesting, estimation });
         audit.rules.push({ rule: rule.name, ...ruleOutcome(result) });
+        if (result?.stopProcessing) break;
       } catch (error) {
         logger.error(`Task ${event.task_id}: automation "${rule.name}" failed:`, error.message);
         audit.rules.push({ rule: rule.name, outcome: 'failed', error: error.message });
+        if (rule.stopOnError) break;
       }
     }
   });

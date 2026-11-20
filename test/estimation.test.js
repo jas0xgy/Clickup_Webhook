@@ -3,12 +3,14 @@ const assert = require('node:assert/strict');
 const { Estimation } = require('../src/services/estimation');
 const { SprintTasks } = require('../src/services/sprintTasks');
 const { ClickUpClient } = require('../src/services/clickupClient');
+const { logger } = require('../src/utils/logger');
 
 const config = {
   backlogListId: 'backlog', sprintFolderId: 'sprints',
   estimation: {
     enabled: true, triggerStatus: 'awaiting estimation', listId: 'estimation',
-    initialStatus: 'awaiting estimate', readyStatus: 'estimate ready', estimateField: 'Effort Estimate'
+    initialStatus: 'awaiting estimate', resetStatus: 'new backlog',
+    readyStatus: 'estimate ready', estimateField: 'Effort Estimate'
   }
 };
 const clone = value => structuredClone(value);
@@ -87,9 +89,10 @@ test('estimation generates a missed story from current fields before copying', a
   assert.equal(writes[1][2].description, `${story}\n\nBacklog task: ${source.url}`);
 });
 
-test('estimate ready copies a positive Effort Estimate to the backlog task once', async () => {
+test('estimate ready copies an estimate once and logs both IDs, the estimate, and outcome', async t => {
   const { service, source, store, writes } = fixture();
   await service.request(clone(source));
+  const info = t.mock.method(logger, 'info', () => {});
   const copy = store.get('copy');
   copy.status = { status: 'estimate ready' };
   copy.custom_fields[0].value = '5';
@@ -97,6 +100,31 @@ test('estimate ready copies a positive Effort Estimate to the backlog task once'
   assert.deepEqual(writes.at(-1), ['field', 'source', 'estimate', 5]);
   assert.equal((await service.complete(clone(copy))).outcome, 'unchanged');
   assert.equal(writes.length, 2);
+  assert.deepEqual(info.mock.calls.map(({ arguments: [message, data] }) => [message, JSON.parse(data)]),
+    ['applied', 'unchanged'].map(outcome => ['Estimation handoff', {
+      estimationTaskId: 'copy', backlogTaskId: 'source', estimate: 5, outcome
+    }]));
+});
+
+test('multiple active copies block reuse, reset, and completion, including an unlinked copy', async () => {
+  const { service, source, store, writes } = fixture();
+  await service.request(clone(source));
+  const copy = store.get('copy');
+  copy.status.status = 'estimate ready';
+  copy.custom_fields[0].value = 5;
+  const duplicate = { ...clone(copy), id: 'other-copy', linked_tasks: [] };
+  store.set(duplicate.id, duplicate);
+
+  const reason = /source: copy, other-copy/;
+  assert.match((await service.request(clone(source))).reason, reason);
+  assert.match((await service.deleteInvalidCopy({ ...clone(source), status: { status: 'new backlog' } })).reason, reason);
+  assert.equal((await service.complete(clone(copy))).outcome, 'flagged');
+  assert.deepEqual(writes.map(([action]) => action), ['create', 'comment']);
+  assert.match(writes[1][2], reason);
+
+  duplicate.archived = true;
+  assert.equal((await service.complete(clone(copy))).outcome, 'applied');
+  assert.deepEqual(writes.at(-1), ['field', 'source', 'estimate', 5]);
 });
 
 test('estimate ready with no estimate flags the estimation task without touching the backlog', async () => {

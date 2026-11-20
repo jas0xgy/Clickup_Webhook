@@ -59,9 +59,26 @@ Cloudflare Tunnel can provide a public HTTPS address:
 cloudflared tunnel --url http://127.0.0.1:3000
 ```
 
-Keep both the tunnel and service running. Use the generated HTTPS address with
-`/webhook/clickup` appended as the webhook endpoint. The address changes when the
-temporary tunnel restarts. Stop the tunnel when testing is finished.
+On Windows, run `start-dev.bat` to start the tunnel and service. Keep both
+windows open. The tunnel window detects the new HTTPS address, waits for public
+`/health` to respond, and updates and reactivates the existing Quick Tunnel
+webhook that matches `CLICKUP_WEBHOOK_SECRET`. It preserves the webhook's scope
+and events and reports success or errors in that window. Create the webhook
+once before using automatic sync; the launcher never creates or deletes one.
+Use `restart-dev.bat` to restart only the service while keeping the tunnel URL.
+Run `start-dev.bat` only when you need a new tunnel.
+
+If you started the tunnel manually or need to retry a failed sync after
+restoring connectivity, run `node scripts\sync-dev-webhook.js https://YOUR-TUNNEL.trycloudflare.com`
+from the project root using the URL from the running tunnel.
+
+If `cloudflared` reports `Failed to initialize DNS local resolver` or a DNS
+lookup timeout, it cannot resolve Cloudflare's tunnel endpoint. A VPN, firewall,
+DNS filter, or temporary network problem can cause this. Check
+`Resolve-DnsName region1.v2.argotunnel.com` or
+`nslookup region1.v2.argotunnel.com` from PowerShell. If permitted, compare the
+result with the VPN disconnected; follow your network or VPN provider's guidance
+if DNS works only without it. Restart the tunnel after DNS resolution works.
 
 ClickUp returns the webhook secret when a webhook is created through its
 [Create Webhook API](https://developer.clickup.com/reference/createwebhook).
@@ -153,6 +170,25 @@ in the Estimation, Sprint, and Testing Lists. Search the daily logs for
 `Workflow validation finding`. The scan does not update tasks, archive copies,
 or post comments. Existing estimation and testing error comments are prefixed
 with `[Workflow Agent]` but still attributed to the API token's owner.
+
+### Status-Change Validation
+
+Before processing a configured status handoff, the service checks the current
+task fields against `sprintRouting.statusValidations` in `src/config.js`. The
+Master Backlog rule for **AWAITING ESTIMATION** requires Product, Platform,
+Item Type, Persona, Goal, Benefit, Success, and Backlog Priority. Missing or
+empty fields fail validation: the service restores the status recorded before
+the move and adds a task comment showing each missing field in uppercase, bold,
+and italics. The estimation handoff is not processed for a failed validation.
+Comments are posted by the ClickUp API token's owner.
+
+After a Master Backlog task passes validation on a move from **NEW BACKLOG** to
+**AWAITING ESTIMATION**, the service appends ` [id: <task_id>]` to its title
+before the estimation handoff. If the title already contains that task's ID tag,
+it is left unchanged.
+
+Add future checks as additional entries in `statusValidations`, specifying the
+target List, status, and required fields.
 
 ### Sprint Routing
 
@@ -382,23 +418,35 @@ in ClickUp changes).
 
 Checking **Ready for acceptance testing** on a sprint task:
 
-- Creates one copy of its Master Backlog task in the testing List
-  (`acceptanceTesting.listId` in `src/config.js`) with status **ready to test**,
+- If no copy exists, creates one in the testing List (`acceptanceTesting.listId`
+  in `src/config.js`) with status **ready to test**,
   the same copied details as the sprint task (name, description with the
   `Backlog task: <url>` link, Sprint Points, priority, tags), and a native link
   to the backlog task.
 - Moves the sprint task to **testing** and the Master Backlog task to
   **IN TESTING**.
-- Re-checking reuses the existing copy (found by native link or backlink line)
-  instead of creating another; only missing status moves are applied.
+- If a copy already exists (found by native link or backlink line), reuses it
+  and sets it to **ready to test** if needed, restoring it if archived.
 - Unchecking does nothing. The sprint task must keep its `Backlog task:` line.
 
 Moving a testing List task to **test complete** moves its linked Master Backlog
 task (found through the testing task's `Backlog task:` line) from **IN TESTING**
-to **READY TO DEPLOY**. If the backlog task is already READY TO DEPLOY, nothing
-happens. If it is in any other status, or the link is missing, the backlog task
-is left alone and the automation posts a comment on the testing task (notifying
-its watchers) explaining the problem, and logs an error.
+to **READY TO DEPLOY** and moves the linked sprint item to **READY TO SHIP**.
+If the backlog task is already **READY TO DEPLOY**, only the sprint status is
+updated if needed. If the backlog task is in any other status or the backlog
+link is missing, neither task is moved and the automation posts a comment on
+the testing task and logs an error. A missing managed sprint item or missing
+**READY TO SHIP** status is logged as an error without undoing the backlog move.
+
+Moving a Testing Items task to **Return to Development** unchecks
+**Acceptance Testing Passed** on the testing task. It moves the linked sprint
+item to **FAILED TESTING** and unchecks **Ready for acceptance testing** there.
+It moves the Master Backlog task from **IN TESTING** back to the column for its
+existing **Assigned Sprint** (**SPRINT 0**, **SPRINT +1**, or **SPRINT +2**),
+without changing the assignment or dates. The testing task stays in
+**Return to Development**. The sprint List must have the configured
+`acceptanceTesting.sprintFailedStatus` status. Missing, mismatched, archived,
+or completed sprint assignments are reported as errors rather than guessed.
 
 Recreating the testing List changes its ID; update `acceptanceTesting.listId`.
 
@@ -419,6 +467,12 @@ Moving that copy to **estimate ready** with a non-zero Effort Estimate sets the
 Master Backlog task's Effort Estimate to the same value. If the estimate is
 empty or zero, or the backlink is missing, the backlog task is left alone and
 the automation comments on the estimation task (notifying its watchers).
+
+If multiple active estimation copies point to the same backlog task, the
+service reports their IDs rather than choosing a copy to reuse, delete, or
+apply. On estimate completion it also comments on the triggering estimation
+task. Resolve the conflict before retrying. Search for `Estimation handoff`
+in the logs for the two task IDs, estimate, and outcome in one entry.
 
 Recreating the Awaiting Estimation List changes its ID; update `estimation.listId`.
 

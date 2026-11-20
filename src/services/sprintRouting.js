@@ -72,6 +72,10 @@ function assignedSprintStatus(sprint, catalog, now) {
   return [...sprintOffsets].find(([, value]) => value === offset)[0];
 }
 
+function findAssignedSprint(catalog, name) {
+  return catalog.sprints.find(sprint => sprint.name.trim() === name.trim());
+}
+
 class SprintRouting {
   constructor(clickup, config, now = Date.now) {
     this.clickup = clickup;
@@ -106,6 +110,21 @@ class SprintRouting {
     const lists = [...new Map([...active, ...archived].map(list => [String(list.id), list])).values()];
     if (!Array.isArray(backlog.statuses)) throw new Error('Master Backlog status metadata is missing');
     return buildCatalog(lists, this.config.completedSprintIds, backlog.statuses);
+  }
+
+  resolveAssignedSprint(task, catalog) {
+    const assigned = this.clickup.getCustomField(task, 'Assigned Sprint');
+    if (assigned?.type !== 'short_text' || typeof assigned.value !== 'string' || isBlank(assigned.value)) {
+      throw new Error(`Master Backlog task ${task.id} has no valid Assigned Sprint`);
+    }
+    const sprint = findAssignedSprint(catalog, assigned.value);
+    if (!sprint) throw new Error(`Assigned Sprint "${assigned.value}" was not found in the Sprint Folder`);
+    if (sprint.archived || sprint.completed) {
+      throw new Error(`Cannot return task ${task.id} to archived or completed sprint "${sprint.name}"`);
+    }
+    const status = assignedSprintStatus(sprint, catalog, this.now());
+    if (!catalog.statuses.includes(status)) throw new Error(`Master Backlog does not have status "${status}"`);
+    return { sprint, status };
   }
 
   async reconcileTask(task, { changes = [], catalog, dryRun = false } = {}) {
@@ -159,7 +178,7 @@ class SprintRouting {
     if (detailsOnly) {
       catalog = catalog || await this.loadCatalog();
       const sprint = isBlank(assigned.value) ? null :
-        catalog.sprints.find(item => item.name.trim() === assigned.value.trim());
+        findAssignedSprint(catalog, assigned.value);
       if (!sprint && !isBlank(assigned.value)) {
         throw new Error(`Assigned Sprint "${assigned.value}" was not found in the Sprint Folder`);
       }
@@ -177,7 +196,7 @@ class SprintRouting {
       statusName(matchingStatusChange.after) : null;
     const unscheduling = requestedStatus === 'ready to schedule';
     let sprint = unscheduling || isBlank(assigned.value) ? null :
-      catalog.sprints.find(item => item.name.trim() === assigned.value.trim());
+      findAssignedSprint(catalog, assigned.value);
     const scheduling = sprintOffsets.has(requestedStatus);
     if (!sprint && !isBlank(assigned.value) && !scheduling && !unscheduling) {
       throw new Error(`Assigned Sprint "${assigned.value}" was not found in the Sprint Folder`);

@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const { ClickUpClient } = require('../src/services/clickupClient');
 const { handleWebhook } = require('../src/services/webhookHandler');
 const { SprintRouting } = require('../src/services/sprintRouting');
+const { Estimation } = require('../src/services/estimation');
+const { AcceptanceTesting } = require('../src/services/acceptanceTesting');
 const { sprintRouting } = require('../src/config');
 
 const fieldId = 'estimate-field-id';
@@ -20,6 +22,112 @@ function eventFor(before, after) {
   };
 }
 
+const requiredStatusFields = [
+  'Product', 'Platform', 'Item Type', 'Persona', 'Goal', 'Benefit', 'Success', 'Backlog Priority'
+];
+
+function awaitingEstimationTask(values = {}) {
+  return {
+    id: 'test-task',
+    name: 'PPI Reason Selection',
+    list: { id: sprintRouting.backlogListId },
+    status: { status: 'AWAITING ESTIMATION' },
+    custom_fields: requiredStatusFields.map(name => ({
+      id: name.toLowerCase().replaceAll(' ', '-'),
+      name,
+      value: Object.hasOwn(values, name) ? values[name] : 'filled'
+    }))
+  };
+}
+
+function awaitingEstimationEvent(before = 'new backlog', event = 'taskUpdated') {
+  return {
+    event,
+    task_id: 'test-task',
+    history_items: [{
+      field: 'status',
+      before: { status: before },
+      after: { status: 'AWAITING ESTIMATION' }
+    }]
+  };
+}
+
+test('invalid Awaiting Estimation moves are reverted and commented with missing fields', async t => {
+  const task = awaitingEstimationTask({ Product: '', Goal: '  ', 'Backlog Priority': null });
+  t.mock.method(ClickUpClient.prototype, 'getTask', async () => task);
+  const rename = t.mock.method(ClickUpClient.prototype, 'updateTask', async () => ({}));
+  const updateStatus = t.mock.method(ClickUpClient.prototype, 'updateTaskStatus', async (id, status) => {
+    task.status.status = status;
+  });
+  const comment = t.mock.method(ClickUpClient.prototype, 'addTaskComment', async () => ({}));
+  const route = t.mock.method(SprintRouting.prototype, 'reconcileTask', async () => ({}));
+  const request = t.mock.method(Estimation.prototype, 'request', async () => ({}));
+
+  await handleWebhook(awaitingEstimationEvent('new backlog', 'taskStatusUpdated'));
+
+  assert.deepEqual(updateStatus.mock.calls.map(call => call.arguments), [['test-task', 'new backlog']]);
+  assert.deepEqual(comment.mock.calls.map(call => call.arguments), [[task.id, [
+    { text: '[Workflow Agent] Validation failed for AWAITING ESTIMATION. Required fields are missing or empty: ' },
+    { text: 'PRODUCT', attributes: { bold: true, italic: true } },
+    { text: ', ' },
+    { text: 'GOAL', attributes: { bold: true, italic: true } },
+    { text: ', ' },
+    { text: 'BACKLOG PRIORITY', attributes: { bold: true, italic: true } },
+    { text: '. The task was returned to "new backlog".' }
+  ]]]);
+  assert.equal(rename.mock.callCount(), 0);
+  assert.equal(route.mock.callCount(), 0);
+  assert.equal(request.mock.callCount(), 0);
+});
+
+test('a valid New Backlog move appends the ID once before the estimation handoff', async t => {
+  const task = awaitingEstimationTask();
+  const expectedName = 'PPI Reason Selection [id: test-task]';
+  t.mock.method(ClickUpClient.prototype, 'getTask', async () => ({ ...task }));
+  const rename = t.mock.method(ClickUpClient.prototype, 'updateTask', async (_id, { name }) => {
+    task.name = name;
+  });
+  const updateStatus = t.mock.method(ClickUpClient.prototype, 'updateTaskStatus', async () => ({}));
+  const comment = t.mock.method(ClickUpClient.prototype, 'addTaskComment', async () => ({}));
+  const route = t.mock.method(SprintRouting.prototype, 'reconcileTask', async () => ({}));
+  const request = t.mock.method(Estimation.prototype, 'request', async () => ({}));
+
+  await handleWebhook(awaitingEstimationEvent(' NEW BACKLOG '));
+  await handleWebhook(awaitingEstimationEvent('new backlog', 'taskStatusUpdated'));
+
+  assert.deepEqual(rename.mock.calls.map(call => call.arguments), [[task.id, { name: expectedName }]]);
+  assert.equal(updateStatus.mock.callCount(), 0);
+  assert.equal(comment.mock.callCount(), 0);
+  assert.equal(route.mock.callCount(), 2);
+  assert.deepEqual(request.mock.calls.map(call => call.arguments[0].name), [expectedName, expectedName]);
+});
+
+test('an Awaiting Estimation move from a different status does not rename the task', async t => {
+  const task = awaitingEstimationTask();
+  t.mock.method(ClickUpClient.prototype, 'getTask', async () => task);
+  const rename = t.mock.method(ClickUpClient.prototype, 'updateTask', async () => ({}));
+  t.mock.method(SprintRouting.prototype, 'reconcileTask', async () => ({}));
+  const request = t.mock.method(Estimation.prototype, 'request', async () => ({}));
+
+  await handleWebhook(awaitingEstimationEvent('ready to schedule'));
+
+  assert.equal(rename.mock.callCount(), 0);
+  assert.equal(request.mock.callCount(), 1);
+});
+
+test('status validation is scoped to the configured Master Backlog List', async t => {
+  const task = awaitingEstimationTask({ Product: null });
+  task.list.id = 'another-list';
+  t.mock.method(ClickUpClient.prototype, 'getTask', async () => task);
+  const updateStatus = t.mock.method(ClickUpClient.prototype, 'updateTaskStatus', async () => ({}));
+  const comment = t.mock.method(ClickUpClient.prototype, 'addTaskComment', async () => ({}));
+
+  await handleWebhook(awaitingEstimationEvent());
+
+  assert.equal(updateStatus.mock.callCount(), 0);
+  assert.equal(comment.mock.callCount(), 0);
+});
+
 test('estimate and both status webhook types dispatch to the shared sprint rule', async t => {
   const task = { id: 'test-task' };
   const get = t.mock.method(ClickUpClient.prototype, 'getTask', async () => task);
@@ -35,6 +143,19 @@ test('estimate and both status webhook types dispatch to the shared sprint rule'
   assert.equal(route.mock.callCount(), 3);
   assert.equal(route.mock.calls[0].arguments[0], task);
   assert.equal(route.mock.calls[2].arguments[1].changes[0].field, 'status');
+});
+
+test('a Return to Development status webhook dispatches the acceptance testing return', async t => {
+  const task = { id: 'testing-task', list: { id: sprintRouting.acceptanceTesting.listId } };
+  t.mock.method(ClickUpClient.prototype, 'getTask', async () => task);
+  const returnToDevelopment = t.mock.method(AcceptanceTesting.prototype, 'returnToDevelopment', async () => ({}));
+
+  await handleWebhook({
+    event: 'taskUpdated', task_id: task.id,
+    history_items: [{ field: 'status', before: { status: 'test in progress' }, after: { status: 'Return to Development' } }]
+  });
+
+  assert.deepEqual(returnToDevelopment.mock.calls.map(call => call.arguments), [[task]]);
 });
 
 test('unrelated fields and formula updates do not fetch tasks or trigger routing', async t => {
@@ -327,6 +448,24 @@ test('both rules share one task fetch and one failing rule does not block the ot
   assert.equal(route.mock.callCount(), 1);
   assert.equal(error.mock.callCount(), 1);
   assert.deepEqual(set.mock.calls[0].arguments, ['test-task', businessValueId, 7]);
+});
+
+test('task comments use ClickUp rich text for formatted segments and preserve plain-text posts', async () => {
+  const clickup = new ClickUpClient();
+  const requests = [];
+  clickup.client.defaults.adapter = async config => {
+    requests.push({ method: config.method, url: config.url, body: JSON.parse(config.data) });
+    return { data: {}, status: 200, statusText: 'OK', headers: {}, config };
+  };
+  const comment = [{ text: 'ITEM TYPE', attributes: { bold: true, italic: true } }];
+
+  await clickup.addTaskComment('test-task', comment);
+  await clickup.addTaskComment('test-task', 'Plain comment', false);
+
+  assert.deepEqual(requests, [
+    { method: 'post', url: '/task/test-task/comment', body: { comment, notify_all: true } },
+    { method: 'post', url: '/task/test-task/comment', body: { comment_text: 'Plain comment', notify_all: false } }
+  ]);
 });
 
 test('custom field writes use ClickUp POST and DELETE endpoints', async () => {

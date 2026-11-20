@@ -1,7 +1,9 @@
+const backlogListId = '901718154839';
+
 module.exports = {
   sprintRouting: {
     workspaceId: '9017847808',
-    backlogListId: '901718154839',
+    backlogListId,
     sprintFolderId: '901712161187',
     // Record a sprint's List ID here after using ClickUp's Complete Sprint action.
     completedSprintIds: [],
@@ -17,9 +19,12 @@ module.exports = {
       testingStatus: 'ready to test',
       backlogStatus: 'in testing',
       sprintStatus: 'testing',
-      // Moving the testing task to completeStatus moves the backlog task from backlogStatus to backlogCompleteStatus.
       completeStatus: 'test complete',
       backlogCompleteStatus: 'ready to deploy',
+      sprintCompleteStatus: 'ready to ship',
+      returnStatus: 'return to development',
+      passedCheckboxField: 'Acceptance Testing Passed',
+      sprintFailedStatus: 'failed testing',
       // Moving the backlog task to any of these archives its testing copy.
       archiveOnStatuses: ['deployed']
     },
@@ -36,6 +41,25 @@ module.exports = {
       // Moving the backlog task into a sprint archives its estimation copy.
       archiveOnStatuses: ['sprint 0', 'sprint +1', 'sprint +2']
     },
+    statusValidations: [
+      {
+        name: 'awaiting-estimation-required-fields',
+        enabled: true,
+        listId: backlogListId,
+        status: 'awaiting estimation',
+        appendTaskIdFromStatus: 'new backlog',
+        requiredFields: [
+          'Product',
+          'Platform',
+          'Item Type',
+          'Persona',
+          'Goal',
+          'Benefit',
+          'Success',
+          'Backlog Priority'
+        ]
+      }
+    ],
     // The daily check creates the next sequential sprint List until this many sprints start after today.
     sprintCreation: {
       enabled: true,

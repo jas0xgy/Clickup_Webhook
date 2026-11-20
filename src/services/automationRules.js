@@ -3,6 +3,9 @@ const { numberValue } = require('../utils/fields');
 const { sprintRouting: sprintConfig } = require('../config');
 const { archiveCopiesOnStatus } = require('./managedCopies');
 const { storyFields, ensureUserStory } = require('./userStory');
+const { StatusValidation } = require('./statusValidation');
+
+const statusValidation = new StatusValidation(sprintConfig.statusValidations || []);
 
 function statusChangedTo(change, settings, key) {
   return Boolean(settings?.enabled && settings[key]) && change?.field === 'status' &&
@@ -58,6 +61,12 @@ function createDropdownNumberRule({ name, sourceField, targetField, values }) {
 
 const automationRules = [
   {
+    name: 'status-change-validation',
+    stopOnError: true,
+    matchesChange: change => statusValidation.matchesChange(change),
+    run: ({ task, changes, clickup }) => statusValidation.run(task, changes, clickup)
+  },
+  {
     name: 'custom-fields-to-task-description',
     matchesChange: change => change?.field === 'custom_field' && typeof change.custom_field?.id === 'string' &&
       storyFields.some(name =>
@@ -94,6 +103,11 @@ const automationRules = [
     name: 'testing-complete-to-ready-to-deploy',
     matchesChange: change => statusChangedTo(change, sprintConfig.acceptanceTesting, 'completeStatus'),
     run: ({ task, acceptanceTesting }) => acceptanceTesting.complete(task)
+  },
+  {
+    name: 'testing-return-to-development',
+    matchesChange: change => statusChangedTo(change, sprintConfig.acceptanceTesting, 'returnStatus'),
+    run: ({ task, acceptanceTesting }) => acceptanceTesting.returnToDevelopment(task)
   },
   {
     name: 'awaiting-estimation-to-estimation-list',
