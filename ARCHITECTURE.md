@@ -223,7 +223,7 @@ assignment/date writes. Sprint tasks carry no custom fields. Preview returns
 the plan without calling its applying methods.
 
 Creation uses API v2 with the source name, description, Sprint Points, priority
-(from Backlog Priority), Item Type and Product tags, the initial
+(from Backlog Priority), Item Type, Product, and Platform tags, the initial
 `backlog` status (`sprintTasks.initialStatus`), a native task
 link, and a `Backlog task: <url>` line that doubles as the ownership marker.
 Restoring or moving refreshes the copied description, points, priority, and tags.

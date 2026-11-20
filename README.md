@@ -90,6 +90,14 @@ hexadecimal signature and a timing-safe comparison.
 npm run dev
 ```
 
+On Windows, double-click `restart-dev.bat` in the project root (or run it from
+a terminal) to stop the existing instance and start `npm run dev`. Keep the
+window open; press Ctrl+C to stop. The launcher targets this project's Node
+processes and their children. If another process occupies the configured
+`PORT` (default 3000), it displays the PID and asks for explicit confirmation
+before stopping it. This includes instances whose relative command line
+cannot be tied to the project. It does not stop unrelated Node processes.
+
 ### Production:
 
 ```bash
@@ -216,13 +224,14 @@ For qualifying positive-estimate Master Backlog tasks, scheduling into SPRINT
 - Copies the task name and current description from Master Backlog. Sprint
   tasks get no custom fields, so Sprint Folder needs none.
 - Sets native Sprint Points from Effort Estimate and adds the **Item Type**
-  selection as a tag when it is Feature or Bug, plus the **Product** label as a
-  tag. Other or blank selections add no tags. Enable the Sprint Points, Tags,
+  selection as a tag when it is Feature or Bug, plus the **Product** and
+  **Platform** labels as tags. Blank selections add no tags; other Item Type
+  selections are ignored. Enable the Sprint Points, Tags,
   and Priorities ClickApps; otherwise a warning is logged.
 - Sets the native priority from **Backlog Priority**: Critical → Urgent;
   Must Have and Workaround Exists → High; Nice to Have → Normal; Minor Impact →
   Low. Blank leaves priority unset; an unmapped option is an error.
-- Does not copy the Product, Persona, Goal, Benefit, or Success custom fields.
+- Does not copy the Product, Platform, Persona, Goal, Benefit, or Success custom fields.
 - Starts new sprint tasks in **backlog** (`sprintTasks.initialStatus` in
   `src/config.js`).
 - Adds a native ClickUp task link and a `Backlog task: <url>` line in the sprint
@@ -398,9 +407,13 @@ Recreating the testing List changes its ID; update `acceptanceTesting.listId`.
 Moving a Master Backlog task to **AWAITING ESTIMATION** creates one copy in the
 Awaiting Estimation List (`estimation.listId` in `src/config.js`) with status
 **awaiting estimate**, the same description (story text plus the
-`Backlog task: <url>` link) and tags (Item Type Feature/Bug, Product) as sprint
+`Backlog task: <url>` link) and tags (Item Type Feature/Bug, Product, Platform) as sprint
 items, and a native link to the backlog task. If a copy already exists (found
 by native link or backlink line), no new one is created.
+
+Moving a Master Backlog task directly from **AWAITING ESTIMATION** back to
+**NEW BACKLOG** deletes its managed copy in Awaiting Estimation instead of
+archiving it. Moving it to **AWAITING ESTIMATION** again creates a fresh copy.
 
 Moving that copy to **estimate ready** with a non-zero Effort Estimate sets the
 Master Backlog task's Effort Estimate to the same value. If the estimate is

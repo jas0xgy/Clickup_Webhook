@@ -116,15 +116,19 @@ function fixture() {
   return { manager, client, source, store, writes };
 }
 
-test('create plan copies the description, points, priority and Item Type/Product tags without custom fields', async () => {
+test('create plan copies the description, points, priority and Item Type/Product/Platform tags without custom fields', async () => {
   const { manager, source, store, writes } = fixture();
+  source.custom_fields.push({
+    id: 'platform', name: 'Platform', type: 'drop_down', value: 0,
+    type_config: { options: [{ id: 'web', name: 'Web', orderindex: 0 }] }
+  });
   const catalog = newCatalog();
   const plan = await manager.prepare(source, catalog.sprints[0], catalog);
   assert.deepEqual(writes, []);
   assert.equal(plan.create.custom_fields, undefined);
   assert.equal(plan.create.description, `${source.description}\n\nBacklog task: ${source.url}`);
   assert.equal(plan.create.points, 2.5);
-  assert.deepEqual(plan.create.tags, ['Feature', 'A']);
+  assert.deepEqual(plan.create.tags, ['Feature', 'A', 'Web']);
   assert.equal(plan.create.priority, 2);
   assert.equal(plan.create.links_to, source.id);
   assert.equal(plan.create.status, 'ready for development');
@@ -134,6 +138,26 @@ test('create plan copies the description, points, priority and Item Type/Product
   assert.equal(item.list.id, 's1');
   assert.equal(item.status.status, 'ready for development');
   assert.equal(source.linked_tasks[0].link_id, item.id);
+});
+
+test('Platform resolves option IDs and indexes, skips blank values, and rejects unknown selections', async () => {
+  const { manager, source, writes } = fixture();
+  const catalog = newCatalog();
+  const platform = {
+    id: 'platform', name: 'Platform', type: 'drop_down',
+    type_config: { options: [{ id: 'web', name: ' Web ', orderindex: 0 }] }
+  };
+  source.custom_fields.push(platform);
+  for (const value of ['web', 0, '0', null, undefined, '']) {
+    platform.value = value;
+    const plan = await manager.prepare(source, catalog.sprints[0], catalog);
+    assert.deepEqual(plan.create.tags, ['Feature', 'A', ...(
+      value == null || value === '' ? [] : ['Web']
+    )]);
+  }
+  platform.value = 'unknown';
+  await assert.rejects(manager.prepare(source, catalog.sprints[0], catalog), /resolve "Platform"/);
+  assert.deepEqual(writes, []);
 });
 
 test('Item Type tags only Feature or Bug, Product adds a tag, and unresolvable selections are rejected', async () => {

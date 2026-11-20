@@ -28,6 +28,7 @@ module.exports = {
     estimation: {
       enabled: true,
       triggerStatus: 'awaiting estimation',
+      resetStatus: 'new backlog',
       listId: '901718172231',
       initialStatus: 'awaiting estimate',
       readyStatus: 'estimate ready',

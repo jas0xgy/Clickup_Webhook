@@ -32,7 +32,7 @@ class Estimation {
     ]);
     for (const item of pages.flat()) {
       const full = typeof item.description === 'string' ? item : await this.clickup.getTask(item.id);
-      if (isManaged(full, source.id)) return full;
+      if (String(full.list?.id) === this.settings.listId && isManaged(full, source.id)) return full;
     }
     return null;
   }
@@ -75,6 +75,37 @@ class Estimation {
     });
     if (!copy?.id) throw new Error('Estimation task creation returned no task ID; inspect the estimation List before retrying');
     logger.info(`Backlog task ${source.id}: created estimation task ${copy.id}`);
+    return { outcome: 'applied', copyId: copy.id };
+  }
+
+  // Called while the webhook handler holds the backlog task's lock.
+  async deleteInvalidCopy(source) {
+    if (String(source.list?.id) !== this.config.backlogListId) return { outcome: 'skipped' };
+    if (statusName(source) !== this.settings.resetStatus) {
+      logger.debug(`Task ${source.id}: status changed again; not deleting its estimation copy`);
+      return { outcome: 'skipped' };
+    }
+
+    const copy = await this.findCopy(source);
+    if (!copy || copy.id === source.id) return { outcome: 'unchanged' };
+    try {
+      const currentCopy = await this.clickup.getTask(copy.id);
+      if (String(currentCopy.list?.id) !== this.settings.listId || !isManaged(currentCopy, source.id)) {
+        logger.warn(`Task ${source.id}: estimation copy ${copy.id} no longer matches; not deleting it`);
+        return { outcome: 'skipped' };
+      }
+      const currentSource = await this.clickup.getTask(source.id);
+      if (String(currentSource.list?.id) !== this.config.backlogListId ||
+          statusName(currentSource) !== this.settings.resetStatus) {
+        logger.debug(`Task ${source.id}: no longer in Master Backlog at ${this.settings.resetStatus}; not deleting its estimation copy`);
+        return { outcome: 'skipped' };
+      }
+      await this.clickup.deleteTask(copy.id);
+    } catch (error) {
+      if (error.response?.status !== 404) throw error;
+      return { outcome: 'unchanged' };
+    }
+    logger.info(`Backlog task ${source.id}: deleted invalid estimation task ${copy.id}`);
     return { outcome: 'applied', copyId: copy.id };
   }
 

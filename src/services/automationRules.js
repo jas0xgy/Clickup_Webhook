@@ -101,6 +101,13 @@ const automationRules = [
     run: ({ task, estimation }) => estimation.request(task)
   },
   {
+    name: 'estimation-reset-deletes-copy',
+    matchesChange: change => statusChangedTo(change, sprintConfig.estimation, 'resetStatus') &&
+      typeof change.before?.status === 'string' &&
+      change.before.status.trim().toLowerCase() === sprintConfig.estimation.triggerStatus,
+    run: ({ task, estimation }) => estimation.deleteInvalidCopy(task)
+  },
+  {
     name: 'estimate-ready-to-backlog-estimate',
     matchesChange: change => statusChangedTo(change, sprintConfig.estimation, 'readyStatus'),
     run: ({ task, estimation }) => estimation.complete(task)

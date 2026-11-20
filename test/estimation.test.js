@@ -60,13 +60,17 @@ function fixture() {
 
 test('awaiting estimation creates one estimation copy with the description, backlink, and tags', async () => {
   const { service, source, writes } = fixture();
+  source.custom_fields.push({
+    id: 'platform', name: 'Platform', type: 'drop_down', value: 'web',
+    type_config: { options: [{ id: 'web', name: 'Web', orderindex: 0 }] }
+  });
   assert.equal((await service.request(clone(source))).outcome, 'applied');
   const [, listId, payload] = writes[0];
   assert.equal(listId, 'estimation');
   assert.equal(payload.status, 'Awaiting Estimate');
   assert.equal(payload.links_to, 'source');
   assert.equal(payload.description, `Story text\n\nBacklog task: ${source.url}`);
-  assert.deepEqual(payload.tags, ['Feature']);
+  assert.deepEqual(payload.tags, ['Feature', 'Web']);
   assert.equal((await service.request(clone(source))).outcome, 'unchanged');
   assert.equal(writes.length, 1);
 });

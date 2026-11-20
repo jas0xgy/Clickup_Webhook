@@ -68,6 +68,10 @@ function fixture() {
 
 test('checking the box creates one testing copy and moves the backlog and sprint tasks', async () => {
   const { service, source, sprintItem, store, writes } = fixture();
+  source.custom_fields.push({
+    id: 'platform', name: 'Platform', type: 'drop_down', value: 0,
+    type_config: { options: [{ id: 'web', name: 'Web', orderindex: 0 }] }
+  });
   const result = await service.handle(clone(sprintItem));
   assert.equal(result.outcome, 'applied');
   const [, listId, payload] = writes.find(write => write[0] === 'create');
@@ -76,6 +80,7 @@ test('checking the box creates one testing copy and moves the backlog and sprint
   assert.equal(payload.links_to, 'source');
   assert.equal(payload.description, `Story text\n\nBacklog task: ${source.url}`);
   assert.equal(payload.points, 3);
+  assert.deepEqual(payload.tags, ['Web']);
   assert.equal(store.get('sprint-item').status.status, 'testing');
   assert.equal(store.get('source').status.status, 'in testing');
 

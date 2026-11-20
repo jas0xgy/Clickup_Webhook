@@ -72,6 +72,10 @@ class ClickUpClient {
     return response.data;
   }
 
+  async deleteTask(taskId) {
+    await this.client.delete(`/task/${taskId}`);
+  }
+
   async getList(listId) {
     const response = await this.client.get(`/list/${listId}`);
     return response.data;

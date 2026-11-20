@@ -47,6 +47,46 @@ test('unrelated fields and formula updates do not fetch tasks or trigger routing
   assert.equal(get.mock.callCount(), 0);
 });
 
+test('only an Awaiting Estimation reset deletes the matching estimation copy', async t => {
+  const task = {
+    id: 'backlog-source', list: { id: sprintRouting.backlogListId },
+    status: { status: 'new backlog' }, linked_tasks: []
+  };
+  const list = { id: sprintRouting.estimation.listId };
+  const description = `Backlog task: https://app.clickup.com/t/${task.id}`;
+  const copies = new Map([
+    ['manual', { id: 'manual', list, description: '' }],
+    ['testing', { id: 'testing', list: { id: 'another-list' }, description }],
+    ['estimate', { id: 'estimate', list, description }]
+  ]);
+  task.linked_tasks.push({ task_id: task.id, link_id: 'testing' });
+  t.mock.method(ClickUpClient.prototype, 'getTask', async id => id === task.id ? task : copies.get(id));
+  t.mock.method(ClickUpClient.prototype, 'getListTasks', async () => [...copies.values()]);
+  t.mock.method(SprintRouting.prototype, 'reconcileTask', async () => ({}));
+  const remove = t.mock.method(ClickUpClient.prototype, 'deleteTask', async id => copies.delete(id));
+  const update = t.mock.method(ClickUpClient.prototype, 'updateTask', async () => ({}));
+  const reset = (before, event = 'taskStatusUpdated') => handleWebhook({
+    event, task_id: task.id,
+    history_items: [{ field: 'status', before: { status: before }, after: { status: 'NEW BACKLOG' } }]
+  });
+
+  await reset('ready to schedule');
+  await reset(undefined);
+  task.status.status = 'ready to schedule';
+  await reset('awaiting estimation');
+  task.status.status = 'new backlog';
+  task.list = list;
+  await reset('awaiting estimation');
+  assert.equal(remove.mock.callCount(), 0);
+
+  task.list = { id: sprintRouting.backlogListId };
+  await reset(' AWAITING ESTIMATION ');
+  await reset('awaiting estimation', 'taskUpdated');
+  assert.deepEqual(remove.mock.calls.map(call => call.arguments), [['estimate']]);
+  assert.deepEqual([...copies.keys()], ['manual', 'testing']);
+  assert.equal(update.mock.callCount(), 0);
+});
+
 test('task name and Product changes dispatch to sprint routing while Persona only updates the description', async t => {
   const task = {
     id: 'test-task',

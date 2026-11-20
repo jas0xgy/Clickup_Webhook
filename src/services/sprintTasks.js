@@ -77,7 +77,7 @@ class SprintTasks {
   sprintTags(source) {
     const itemType = this.dropdownLabel(source, tagField);
     return [itemType && tagOptions.has(normalize(itemType)) ? itemType : null,
-      this.productTags(source).current].filter(Boolean);
+      this.productTags(source).current, this.dropdownLabel(source, 'Platform')].filter(Boolean);
   }
 
   sprintPriority(source) {
